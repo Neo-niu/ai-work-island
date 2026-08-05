@@ -108,7 +108,9 @@ case "$MODE" in
   --verify|verify)
     open_app
     for _ in 1 2 3 4 5; do
-    if /usr/bin/pgrep -x "$PROCESS_NAME" >/dev/null; then
+      if /usr/bin/pgrep -x "$PROCESS_NAME" >/dev/null; then
+        /usr/bin/xattr -cr "$APP_BUNDLE"
+        /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
         exit 0
       fi
       sleep 1

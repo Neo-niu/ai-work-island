@@ -58,6 +58,22 @@ private func runHermesDiagnostics() {
     print("Touch Bar title\t\(status.compactTitle)")
 }
 
+private func runCompanyQuotaDiagnostics() {
+    let scanner = CompanyQuotaScanner()
+    Task {
+        if let quota = await scanner.scanIfNeeded() {
+            print("Company quota\t\(quota.remainingPercent)% remaining")
+            print(String(format: "Remaining USD\t$%.2f", quota.remainingUSD))
+            print(String(format: "Used USD\t$%.2f / $%.2f", quota.usedUSD, quota.totalUSD))
+            exit(EXIT_SUCCESS)
+        } else {
+            print("Company quota\tUnavailable; keep a signed-in model.zhenguanyu.com tab open in Edge")
+            exit(EXIT_FAILURE)
+        }
+    }
+    dispatchMain()
+}
+
 @MainActor
 private func runEffortDiagnostic(rawValue: String) {
     guard let choice = EffortChoice(rawValue: rawValue) else {
@@ -99,6 +115,8 @@ case .diagnoseRollouts:
     runDiagnostics()
 case .diagnoseHermes:
     runHermesDiagnostics()
+case .diagnoseCompanyQuota:
+    runCompanyQuotaDiagnostics()
 case let .diagnoseEffort(rawValue):
     runEffortDiagnostic(rawValue: rawValue)
 case .diagnoseAccessibilityTree:

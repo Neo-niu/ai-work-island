@@ -2,6 +2,7 @@ public enum LaunchCommand: Equatable, Sendable {
     case run
     case diagnoseRollouts
     case diagnoseHermes
+    case diagnoseCompanyQuota
     case diagnoseEffort(String)
     case diagnoseAccessibilityTree
     case diagnoseAccessibilityPID(Int32)
@@ -12,6 +13,8 @@ public enum LaunchCommand: Equatable, Sendable {
            arguments.indices.contains(index + 1),
            let processIdentifier = Int32(arguments[index + 1]) {
             self = .diagnoseAccessibilityPID(processIdentifier)
+        } else if arguments.contains("--diagnose-company-quota") {
+            self = .diagnoseCompanyQuota
         } else if arguments.contains("--diagnose-hermes") {
             self = .diagnoseHermes
         } else if arguments.contains("--login-item-status") {

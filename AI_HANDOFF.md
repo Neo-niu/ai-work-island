@@ -13,6 +13,7 @@
 - Swift 6 + AppKit。
 - `RolloutScanner` 读取 Codex 本地状态。
 - `HermesStatusScanner` 只读 `gateway_state.json` 和 `kanban.db`。
+- `CompanyQuotaScanner` 每 60 秒通过 Edge 页面内同源请求读取 `/api/v1/users/self`，不提取 Cookie。
 - `TouchBarController` 展示 Codex 项目、额度、Hermes 聚合状态。
 - App 仅在 Codex 或 Hermes 前台时展开。
 - 构建目录默认放 `/tmp`，避免 iCloud 路径中的 SwiftPM 锁竞争。
@@ -20,6 +21,7 @@
 ## 未解决
 
 - Hermes 具体任务列表与任务级跳转。
+- 公司额度目前依赖 Edge 保留平台标签页；可评估平台官方机器凭证或本地安全缓存。
 - 等待用户输入与普通 blocked 的进一步区分。
 - 正式 Developer ID 签名和 notarization。
 - 私有 Touch Bar API 的系统升级兼容性。

@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let scanner = RolloutScanner()
     private let hermesScanner = HermesStatusScanner()
+    private let companyQuotaScanner = CompanyQuotaScanner()
     private let grouper = ProjectGrouper()
     private let touchBarController = TouchBarController()
     private let accessibilityController = CodexAccessibilityController()
@@ -27,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         blockedTasks: 0,
         failedTasks: 0
     )
+    private var latestCompanyQuota: CompanyModelQuota?
     private var latestGroupCount = 0
     private var latestThreadCount = 0
     private var latestUnreadThreadCount = 0
@@ -71,6 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         touchBarController.onHermesSelected = { [weak self] in
             self?.openHermes()
+        }
+        touchBarController.onCompanyQuotaSelected = { [weak self] in
+            self?.openCompanyQuotaPage()
         }
 
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -158,9 +163,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         refreshInFlight = true
 
-        Task { [weak self, scanner, hermesScanner, grouper] in
+        Task { [weak self, scanner, hermesScanner, companyQuotaScanner, grouper] in
             let snapshot = await scanner.scanSnapshot()
             let hermesStatus = hermesScanner.scan()
+            let companyQuota = await companyQuotaScanner.scanIfNeeded()
             guard let self else {
                 return
             }
@@ -172,12 +178,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 selectedProjectRoots: snapshot.selectedProjectRoots,
                 selectedProjectName: selectedProjectName
             )
-            self.apply(groups: groups, weeklyLimit: snapshot.weeklyLimit, hermesStatus: hermesStatus)
+            self.apply(
+                groups: groups,
+                weeklyLimit: snapshot.weeklyLimit,
+                hermesStatus: hermesStatus,
+                companyQuota: companyQuota
+            )
             self.refreshInFlight = false
         }
     }
 
-    private func apply(groups: [ProjectGroup], weeklyLimit: WeeklyLimitUsage?, hermesStatus: HermesStatus) {
+    private func apply(
+        groups: [ProjectGroup],
+        weeklyLimit: WeeklyLimitUsage?,
+        hermesStatus: HermesStatus,
+        companyQuota: CompanyModelQuota?
+    ) {
         if RefreshPolicy.shouldApply(previous: latestGroups, next: groups) {
             latestGroups = groups
             latestGroupCount = groups.count
@@ -198,6 +214,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if latestHermesStatus != hermesStatus {
             latestHermesStatus = hermesStatus
             touchBarController.showHermesStatus(hermesStatus)
+        }
+        if latestCompanyQuota != companyQuota {
+            latestCompanyQuota = companyQuota
+            touchBarController.showCompanyQuota(companyQuota)
         }
         updateStatusText()
     }
@@ -346,6 +366,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             at: URL(fileURLWithPath: "/Applications/Hermes.app"),
             configuration: NSWorkspace.OpenConfiguration()
         )
+    }
+
+    @objc private func openCompanyQuotaPage() {
+        NSWorkspace.shared.open(URL(string: "https://model.zhenguanyu.com/console/usage/dashboard")!)
     }
 
     @objc private func requestAccessibilityAccess() {

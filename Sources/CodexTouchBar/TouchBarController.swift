@@ -16,6 +16,7 @@ final class TouchBarController: NSObject {
     private static let scrubberItemIdentifier = NSUserInterfaceItemIdentifier("dev.marlonjd.CodexTouchBar.project-cell")
     private static let weeklyLimitItemIdentifier = NSTouchBarItem.Identifier("dev.marlonjd.CodexTouchBar.weekly-limit")
     private static let hermesItemIdentifier = NSTouchBarItem.Identifier("dev.kanyun.CodexHermesTouchBar.hermes")
+    private static let companyQuotaItemIdentifier = NSTouchBarItem.Identifier("dev.kanyun.CodexHermesTouchBar.company-quota")
     private static let effortItemIdentifier = NSTouchBarItem.Identifier("dev.marlonjd.CodexTouchBar.effort")
     private static let speedItemIdentifier = NSTouchBarItem.Identifier("dev.marlonjd.CodexTouchBar.speed")
     private static let backItemIdentifier = NSTouchBarItem.Identifier("dev.marlonjd.CodexTouchBar.settings.back")
@@ -24,6 +25,7 @@ final class TouchBarController: NSObject {
     var onEffortSelected: ((EffortChoice) -> Void)?
     var onSpeedSelected: ((SpeedChoice) -> Void)?
     var onHermesSelected: (() -> Void)?
+    var onCompanyQuotaSelected: (() -> Void)?
 
     private(set) var isAvailable = false
     private(set) var isPresented = false
@@ -42,6 +44,11 @@ final class TouchBarController: NSObject {
         title: "Hermes —",
         symbolName: "sparkles",
         action: #selector(openHermes)
+    )
+    private lazy var companyQuotaButton = makeMainSettingButton(
+        title: "公司 —",
+        symbolName: "building.2.fill",
+        action: #selector(openCompanyQuota)
     )
     private lazy var effortButton = makeMainSettingButton(
         title: effortTitle,
@@ -158,6 +165,23 @@ final class TouchBarController: NSObject {
         hermesButton.setAccessibilityLabel(status.compactTitle)
     }
 
+    func showCompanyQuota(_ quota: CompanyModelQuota?) {
+        let title = quota.map { "公司 \($0.remainingPercent)%" } ?? "公司 —"
+        let low = (quota?.remainingPercent ?? 100) <= 20
+        companyQuotaButton.image = TouchBarImageRenderer.image(
+            title: title,
+            symbolName: low ? "exclamationmark.triangle.fill" : "building.2.fill",
+            textColor: low ? .systemRed : .white
+        )
+        if let quota {
+            companyQuotaButton.setAccessibilityLabel(
+                String(format: "公司模型额度剩余 %.2f 美元，共 %.2f 美元", quota.remainingUSD, quota.totalUSD)
+            )
+        } else {
+            companyQuotaButton.setAccessibilityLabel("公司模型额度不可用，点击打开额度页面")
+        }
+    }
+
     @discardableResult
     func present() -> Bool {
         if isPresented {
@@ -260,6 +284,10 @@ final class TouchBarController: NSObject {
 
     @objc private func openHermes() {
         onHermesSelected?()
+    }
+
+    @objc private func openCompanyQuota() {
+        onCompanyQuotaSelected?()
     }
 
     @objc private func showExpandedProjects() {
@@ -377,6 +405,7 @@ final class TouchBarController: NSObject {
                 identifiers.append(Self.weeklyLimitItemIdentifier)
             }
             identifiers.append(contentsOf: [
+                Self.companyQuotaItemIdentifier,
                 Self.hermesItemIdentifier,
                 Self.effortItemIdentifier,
                 Self.speedItemIdentifier,
@@ -460,6 +489,12 @@ extension TouchBarController: NSTouchBarDelegate {
                 let item = NSCustomTouchBarItem(identifier: identifier)
                 item.customizationLabel = "Hermes Status"
                 item.view = hermesButton
+                return item
+            }
+            if identifier == Self.companyQuotaItemIdentifier {
+                let item = NSCustomTouchBarItem(identifier: identifier)
+                item.customizationLabel = "Company Model Quota"
+                item.view = companyQuotaButton
                 return item
             }
             if identifier == Self.effortItemIdentifier {
