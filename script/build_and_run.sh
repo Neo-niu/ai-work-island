@@ -14,6 +14,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 SCRATCH_DIR="${CODEX_HERMES_BUILD_DIR:-/tmp/codex-hermes-touch-bar-build}"
 APP_BUNDLE="$DIST_DIR/$DISPLAY_NAME.app"
+INSTALLED_APP_BUNDLE="/Applications/$DISPLAY_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
 APP_BINARY="$APP_MACOS/$PRODUCT_NAME"
@@ -85,9 +86,20 @@ else
   echo "warning: $SIGN_IDENTITY not found; using an unstable ad-hoc signature" >&2
   codesign --force --sign - "$APP_BUNDLE" >/dev/null
 fi
+/usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
+
+# Run from /Applications so iCloud does not mutate the live bundle metadata.
+/usr/bin/ditto "$APP_BUNDLE" "$INSTALLED_APP_BUNDLE"
+/usr/bin/xattr -cr "$INSTALLED_APP_BUNDLE"
+if [[ -n "$SIGN_IDENTITY" ]] && /usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/grep -Fq "\"$SIGN_IDENTITY\""; then
+  codesign --force --options runtime --timestamp=none --sign "$SIGN_IDENTITY" "$INSTALLED_APP_BUNDLE" >/dev/null
+else
+  codesign --force --sign - "$INSTALLED_APP_BUNDLE" >/dev/null
+fi
+/usr/bin/codesign --verify --deep --strict "$INSTALLED_APP_BUNDLE"
 
 open_app() {
-  /usr/bin/open "$APP_BUNDLE"
+  /usr/bin/open "$INSTALLED_APP_BUNDLE"
 }
 
 case "$MODE" in
@@ -109,8 +121,7 @@ case "$MODE" in
     open_app
     for _ in 1 2 3 4 5; do
       if /usr/bin/pgrep -x "$PROCESS_NAME" >/dev/null; then
-        /usr/bin/xattr -cr "$APP_BUNDLE"
-        /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
+        /usr/bin/codesign --verify --deep --strict "$INSTALLED_APP_BUNDLE"
         exit 0
       fi
       sleep 1

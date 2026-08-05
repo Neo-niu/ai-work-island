@@ -17,6 +17,7 @@
 - `TouchBarController` 展示 Codex 项目、额度、Hermes 聚合状态。
 - App 仅在 Codex 或 Hermes 前台时展开。
 - 构建目录默认放 `/tmp`，避免 iCloud 路径中的 SwiftPM 锁竞争。
+- 构建产物保留在 `dist`，实际运行副本安装到 `/Applications`，避免 iCloud 改写 Bundle 元数据。
 
 ## 未解决
 

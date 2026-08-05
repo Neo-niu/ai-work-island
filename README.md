@@ -26,6 +26,8 @@ Hermes 状态优先级：`阻塞 > 失败 > 运行 > 在线 > 离线`。
 dist/Codex Hermes Touch Bar.app
 ```
 
+验证运行时会同时安装到 `/Applications/Codex Hermes Touch Bar.app`。源码仍保存在 iCloud，App 从本机 Applications 运行，避免 iCloud 修改签名元数据。
+
 诊断数据源：
 
 ```bash
