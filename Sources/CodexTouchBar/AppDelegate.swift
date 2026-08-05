@@ -4,9 +4,11 @@ import CodexTouchBarCore
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let codexBundleIdentifier = "com.openai.codex"
+    private static let hermesBundleIdentifier = "com.nousresearch.hermes.setup"
     private static let enabledDefaultsKey = "touchBarEnabled"
 
     private let scanner = RolloutScanner()
+    private let hermesScanner = HermesStatusScanner()
     private let grouper = ProjectGrouper()
     private let touchBarController = TouchBarController()
     private let accessibilityController = CodexAccessibilityController()
@@ -18,6 +20,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var refreshInFlight = false
     private var latestGroups: [ProjectGroup]?
     private var latestWeeklyLimit: WeeklyLimitUsage?
+    private var latestHermesStatus = HermesStatus(
+        gatewayRunning: false,
+        connectedPlatforms: 0,
+        runningTasks: 0,
+        blockedTasks: 0,
+        failedTasks: 0
+    )
     private var latestGroupCount = 0
     private var latestThreadCount = 0
     private var latestUnreadThreadCount = 0
@@ -59,6 +68,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         touchBarController.onSpeedSelected = { [weak self] choice in
             self?.applySpeed(choice)
+        }
+        touchBarController.onHermesSelected = { [weak self] in
+            self?.openHermes()
         }
 
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -112,6 +124,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openCodexItem.target = self
         menu.addItem(openCodexItem)
 
+        let openHermesItem = NSMenuItem(title: "Open Hermes", action: #selector(openHermes), keyEquivalent: "h")
+        openHermesItem.target = self
+        menu.addItem(openHermesItem)
+
         let accessibilityItem = NSMenuItem(
             title: "Enable Effort & Speed Controls…",
             action: #selector(requestAccessibilityAccess),
@@ -121,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(accessibilityItem)
 
         menu.addItem(.separator())
-        let quitItem = NSMenuItem(title: "Quit Codex Touch Bar", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit Codex Hermes Touch Bar", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -142,8 +158,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         refreshInFlight = true
 
-        Task { [weak self, scanner, grouper] in
+        Task { [weak self, scanner, hermesScanner, grouper] in
             let snapshot = await scanner.scanSnapshot()
+            let hermesStatus = hermesScanner.scan()
             guard let self else {
                 return
             }
@@ -155,12 +172,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 selectedProjectRoots: snapshot.selectedProjectRoots,
                 selectedProjectName: selectedProjectName
             )
-            self.apply(groups: groups, weeklyLimit: snapshot.weeklyLimit)
+            self.apply(groups: groups, weeklyLimit: snapshot.weeklyLimit, hermesStatus: hermesStatus)
             self.refreshInFlight = false
         }
     }
 
-    private func apply(groups: [ProjectGroup], weeklyLimit: WeeklyLimitUsage?) {
+    private func apply(groups: [ProjectGroup], weeklyLimit: WeeklyLimitUsage?, hermesStatus: HermesStatus) {
         if RefreshPolicy.shouldApply(previous: latestGroups, next: groups) {
             latestGroups = groups
             latestGroupCount = groups.count
@@ -178,6 +195,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             latestWeeklyLimit = weeklyLimit
             touchBarController.showWeeklyLimit(weeklyLimit)
         }
+        if latestHermesStatus != hermesStatus {
+            latestHermesStatus = hermesStatus
+            touchBarController.showHermesStatus(hermesStatus)
+        }
         updateStatusText()
     }
 
@@ -194,7 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transientStatus = nil
 
         if latestThreadCount == 0, latestUnreadThreadCount == 0 {
-            statusMenuItem?.title = "No active Codex tasks"
+            statusMenuItem?.title = "Codex idle · \(latestHermesStatus.compactTitle)"
         } else {
             let taskWord = latestThreadCount == 1 ? "task" : "tasks"
             let projectWord = latestGroupCount == 1 ? "project" : "projects"
@@ -206,8 +227,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updatePresentation() {
-        let codexIsFrontmost = isCodexFrontmost
-        if isEnabled && codexIsFrontmost && touchBarController.isAvailable {
+        if isEnabled && isSupportedAppFrontmost && touchBarController.isAvailable {
             _ = touchBarController.present()
         } else {
             touchBarController.dismiss()
@@ -218,12 +238,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.codexBundleIdentifier
     }
 
+    private var isSupportedAppFrontmost: Bool {
+        guard let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return false }
+        return bundleID == Self.codexBundleIdentifier || bundleID == Self.hermesBundleIdentifier
+    }
+
     private func updateRefreshSchedule() {
         refreshTimer?.invalidate()
         refreshTimer = nil
 
         guard isEnabled,
-              let interval = RefreshPolicy.pollInterval(codexIsFrontmost: isCodexFrontmost) else {
+              let interval = RefreshPolicy.pollInterval(codexIsFrontmost: isSupportedAppFrontmost) else {
             return
         }
         let timer = Timer(
@@ -284,7 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func frontmostApplicationChanged(_ notification: Notification) {
         updateRefreshSchedule()
-        if isEnabled && isCodexFrontmost {
+        if isEnabled && isSupportedAppFrontmost {
             requestRefresh()
         }
         updatePresentation()
@@ -312,6 +337,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openCodex() {
         NSWorkspace.shared.openApplication(
             at: URL(fileURLWithPath: "/Applications/ChatGPT.app"),
+            configuration: NSWorkspace.OpenConfiguration()
+        )
+    }
+
+    @objc private func openHermes() {
+        NSWorkspace.shared.openApplication(
+            at: URL(fileURLWithPath: "/Applications/Hermes.app"),
             configuration: NSWorkspace.OpenConfiguration()
         )
     }

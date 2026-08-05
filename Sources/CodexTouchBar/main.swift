@@ -48,6 +48,16 @@ private func runDiagnostics() {
     dispatchMain()
 }
 
+private func runHermesDiagnostics() {
+    let status = HermesStatusScanner().scan()
+    print("Gateway\t\(status.gatewayRunning ? "running" : "stopped")")
+    print("Connected platforms\t\(status.connectedPlatforms)")
+    print("Running tasks\t\(status.runningTasks)")
+    print("Blocked tasks\t\(status.blockedTasks)")
+    print("Failed tasks\t\(status.failedTasks)")
+    print("Touch Bar title\t\(status.compactTitle)")
+}
+
 @MainActor
 private func runEffortDiagnostic(rawValue: String) {
     guard let choice = EffortChoice(rawValue: rawValue) else {
@@ -87,6 +97,8 @@ private func runAccessibilityTreeDiagnostic(processIdentifier: pid_t? = nil) {
 switch LaunchCommand(arguments: CommandLine.arguments) {
 case .diagnoseRollouts:
     runDiagnostics()
+case .diagnoseHermes:
+    runHermesDiagnostics()
 case let .diagnoseEffort(rawValue):
     runEffortDiagnostic(rawValue: rawValue)
 case .diagnoseAccessibilityTree:

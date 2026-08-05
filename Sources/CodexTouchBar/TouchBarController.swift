@@ -15,6 +15,7 @@ final class TouchBarController: NSObject {
     private static let trayItemIdentifier = NSTouchBarItem.Identifier("dev.marlonjd.CodexTouchBar.tray")
     private static let scrubberItemIdentifier = NSUserInterfaceItemIdentifier("dev.marlonjd.CodexTouchBar.project-cell")
     private static let weeklyLimitItemIdentifier = NSTouchBarItem.Identifier("dev.marlonjd.CodexTouchBar.weekly-limit")
+    private static let hermesItemIdentifier = NSTouchBarItem.Identifier("dev.kanyun.CodexHermesTouchBar.hermes")
     private static let effortItemIdentifier = NSTouchBarItem.Identifier("dev.marlonjd.CodexTouchBar.effort")
     private static let speedItemIdentifier = NSTouchBarItem.Identifier("dev.marlonjd.CodexTouchBar.speed")
     private static let backItemIdentifier = NSTouchBarItem.Identifier("dev.marlonjd.CodexTouchBar.settings.back")
@@ -22,6 +23,7 @@ final class TouchBarController: NSObject {
     var onProjectSelected: ((ProjectGroup) -> Void)?
     var onEffortSelected: ((EffortChoice) -> Void)?
     var onSpeedSelected: ((SpeedChoice) -> Void)?
+    var onHermesSelected: (() -> Void)?
 
     private(set) var isAvailable = false
     private(set) var isPresented = false
@@ -32,9 +34,15 @@ final class TouchBarController: NSObject {
     private var trayItemWasAdded = false
     private var layoutState = TouchBarLayoutState()
     private var weeklyLimit: WeeklyLimitUsage?
+    private var hermesStatus = HermesStatus(gatewayRunning: false, connectedPlatforms: 0, runningTasks: 0, blockedTasks: 0, failedTasks: 0)
     private var projectStripWidthConstraint: NSLayoutConstraint?
     private var settingSelections: [NSTouchBarItem.Identifier: SettingSelection] = [:]
     private lazy var weeklyLimitButton = makeWeeklyLimitButton()
+    private lazy var hermesButton = makeMainSettingButton(
+        title: "Hermes —",
+        symbolName: "sparkles",
+        action: #selector(openHermes)
+    )
     private lazy var effortButton = makeMainSettingButton(
         title: effortTitle,
         symbolName: "brain.head.profile",
@@ -140,6 +148,16 @@ final class TouchBarController: NSObject {
         speedButton.setAccessibilityLabel(selectedTitle)
     }
 
+    func showHermesStatus(_ status: HermesStatus) {
+        hermesStatus = status
+        hermesButton.image = TouchBarImageRenderer.image(
+            title: status.compactTitle,
+            symbolName: status.needsAttention ? "exclamationmark.circle.fill" : "sparkles",
+            textColor: status.needsAttention ? .systemRed : .white
+        )
+        hermesButton.setAccessibilityLabel(status.compactTitle)
+    }
+
     @discardableResult
     func present() -> Bool {
         if isPresented {
@@ -238,6 +256,10 @@ final class TouchBarController: NSObject {
     @objc private func showSpeedOptions() {
         layoutState.show(.speed)
         updateVisibleItems()
+    }
+
+    @objc private func openHermes() {
+        onHermesSelected?()
     }
 
     @objc private func showExpandedProjects() {
@@ -355,6 +377,7 @@ final class TouchBarController: NSObject {
                 identifiers.append(Self.weeklyLimitItemIdentifier)
             }
             identifiers.append(contentsOf: [
+                Self.hermesItemIdentifier,
                 Self.effortItemIdentifier,
                 Self.speedItemIdentifier,
             ])
@@ -431,6 +454,12 @@ extension TouchBarController: NSTouchBarDelegate {
                 let item = NSCustomTouchBarItem(identifier: identifier)
                 item.customizationLabel = "Weekly Limit"
                 item.view = weeklyLimitButton
+                return item
+            }
+            if identifier == Self.hermesItemIdentifier {
+                let item = NSCustomTouchBarItem(identifier: identifier)
+                item.customizationLabel = "Hermes Status"
+                item.view = hermesButton
                 return item
             }
             if identifier == Self.effortItemIdentifier {

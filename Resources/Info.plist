@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDisplayName</key>
-    <string>Codex Touch Bar</string>
+    <string>Codex Hermes Touch Bar</string>
     <key>CFBundleExecutable</key>
     <string>CodexTouchBar</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.marlonjd.CodexTouchBar</string>
+    <string>dev.kanyun.CodexHermesTouchBar</string>
     <key>CFBundleName</key>
-    <string>Codex Touch Bar</string>
+    <string>Codex Hermes Touch Bar</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
