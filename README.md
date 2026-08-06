@@ -1,12 +1,15 @@
 # Codex Hermes Touch Bar
 
-把 MacBook Pro Touch Bar 变成 Codex 与 Hermes 的轻量状态中控台。
+把 MacBook Pro Touch Bar 变成以展示为主的 Codex 与 Hermes 状态仪表盘。
 
 ## 当前能力
 
-- Codex：显示活动项目、未读结果、周额度；点击项目跳转对应线程。
-- Hermes：读取本机 Gateway 与 Kanban 状态，显示运行、阻塞或失败数量；点击打开 Hermes Desktop。
-- 公司模型平台：通过 Edge 已登录页面读取本月剩余额度，显示剩余百分比；点击打开额度页面。
+- Codex：汇总显示项目数、运行任务数和待读结果，不再用 Touch Bar 浏览或点击具体项目。
+- Token：同时显示 Codex 周使用比例与剩余比例。
+- Hermes：只读本机 Gateway 与 Kanban 状态，显示运行、阻塞或失败数量。
+- 公司模型平台：通过 Edge 已登录页面读取本月额度，显示已使用比例。
+- 推理程度：保留一条五档滑块，支持低、中、高、极高和 Ultra。
+- 宠物：左侧常驻轻量动画猫，不承担操作入口。
 - 仅在 Codex 或 Hermes 位于前台时展开 Touch Bar。
 - 所有状态均只读本机文件，不读取提示词正文，不需要 Token。
 
@@ -48,8 +51,9 @@ Hermes 查询使用 SQLite 只读模式；没有上述文件时显示离线，�
 
 - Touch Bar 常驻能力依赖 macOS 私有 API，未来系统版本可能改变。
 - Hermes Desktop 暂无公开会话 deep link，因此点击 Hermes 状态先打开 App，尚不能精确跳转任务。
-- 当前 Hermes 只展示聚合数量，下一版再加入具体任务横向列表。
+- 当前 Hermes 只展示聚合数量，不展示具体任务列表。
 - 公司额度读取要求 Edge 已登录且至少保留一个公司模型平台标签页；否则显示“公司 —”。
+- 推理程度滑块依赖辅助功能权限控制 Codex；失败时不会修改 Codex 设置。
 - 本地构建采用 ad-hoc 签名；重建后 macOS 可能重新要求辅助功能授权。
 
 ## 验证

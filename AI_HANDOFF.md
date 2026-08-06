@@ -2,7 +2,7 @@
 
 ## 目的
 
-将 Touch Bar 做成 Codex 与 Hermes 的状态、提醒和跳转入口，减少反复切窗口检查。
+将 Touch Bar 做成以展示为主的 Codex 与 Hermes 状态仪表盘，减少切窗口检查和误触。
 
 ## 背景
 
@@ -14,14 +14,17 @@
 - `RolloutScanner` 读取 Codex 本地状态。
 - `HermesStatusScanner` 只读 `gateway_state.json` 和 `kanban.db`。
 - `CompanyQuotaScanner` 每 60 秒通过 Edge 页面内同源请求读取 `/api/v1/users/self`，不提取 Cookie。
-- `TouchBarController` 展示 Codex 项目、额度、Hermes 聚合状态。
+- `TouchBarController` 默认只展示 Codex 项目/任务汇总、周 Token 使用、公司额度、Hermes 聚合状态和动画宠物。
+- 主界面唯一业务交互是五档推理程度滑块；项目跳转、项目展开和速度选择已从 Touch Bar 主界面移除。
+- 宠物当前使用系统 Emoji 帧，不引入图片资源或网络依赖。
 - App 仅在 Codex 或 Hermes 前台时展开。
 - 构建目录默认放 `/tmp`，避免 iCloud 路径中的 SwiftPM 锁竞争。
 - 构建产物保留在 `dist`，实际运行副本安装到 `/Applications`，避免 iCloud 改写 Bundle 元数据。
 
 ## 未解决
 
-- Hermes 具体任务列表与任务级跳转。
+- 是否需要可配置宠物形象；当前固定为轻量动画猫。
+- Token 当前展示 Codex 周额度百分比，不是逐线程精确 Token 数。
 - 公司额度目前依赖 Edge 保留平台标签页；可评估平台官方机器凭证或本地安全缓存。
 - 等待用户输入与普通 blocked 的进一步区分。
 - 正式 Developer ID 签名和 notarization。

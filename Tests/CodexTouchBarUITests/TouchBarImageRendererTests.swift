@@ -114,4 +114,5 @@ import Testing
     ])
     #expect(EffortChoice.commandOptionCount == 6)
     #expect(EffortChoice.ultra.commandTargetIndex == 5)
+    #expect(EffortChoice.allCases.map(\.shortTitle) == ["低", "中", "高", "极高", "Ultra"])
 }

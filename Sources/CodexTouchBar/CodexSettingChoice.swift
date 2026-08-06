@@ -29,6 +29,16 @@ enum EffortChoice: String, CaseIterable, Sendable {
         }
     }
 
+    var shortTitle: String {
+        switch self {
+        case .low: "低"
+        case .medium: "中"
+        case .high: "高"
+        case .xhigh: "极高"
+        case .ultra: "Ultra"
+        }
+    }
+
     var accessibilityLabels: [String] {
         switch self {
         case .low: ["Sınırlı", "Low"]
