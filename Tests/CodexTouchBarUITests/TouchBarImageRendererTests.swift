@@ -104,6 +104,19 @@ import Testing
     #expect(unread.size.height == plain.size.height)
 }
 
+@MainActor
+@Test func dashboardProgressAndEffortFeedbackViewsUseCompactTouchBarSizing() {
+    let quota = QuotaProgressView()
+    quota.update(title: "周 42%", usedPercent: 42)
+    quota.layoutSubtreeIfNeeded()
+    #expect(quota.fittingSize.width <= 110)
+
+    let feedback = EffortFeedbackView()
+    feedback.select(index: 4, animated: false)
+    feedback.layoutSubtreeIfNeeded()
+    #expect(feedback.fittingSize.width == 150)
+}
+
 @Test func effortChoicesMatchCodexWhileUltraTargetsTheHiddenMaxStep() {
     #expect(EffortChoice.allCases.map(\.rawValue) == [
         "low",

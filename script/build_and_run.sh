@@ -9,6 +9,7 @@ BUNDLE_ID="dev.kanyun.CodexHermesTouchBar"
 MIN_SYSTEM_VERSION="13.0"
 DEFAULT_SIGN_IDENTITY=""
 SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-$DEFAULT_SIGN_IDENTITY}"
+ADHOC_REQUIREMENT="designated => identifier \"$BUNDLE_ID\""
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -17,6 +18,7 @@ APP_BUNDLE="$DIST_DIR/$DISPLAY_NAME.app"
 INSTALLED_APP_BUNDLE="/Applications/$DISPLAY_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
+APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$PRODUCT_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 
@@ -45,8 +47,9 @@ swift build --disable-sandbox --package-path "$ROOT_DIR" --scratch-path "$SCRATC
 BUILD_BINARY="$(swift build --disable-sandbox --package-path "$ROOT_DIR" --scratch-path "$SCRATCH_DIR" --show-bin-path)/$PRODUCT_NAME"
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS"
+mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
+cp "$ROOT_DIR/Resources/mechanical-touchbar-pet-96.png" "$APP_RESOURCES/"
 chmod +x "$APP_BINARY"
 
 cat >"$INFO_PLIST" <<PLIST
@@ -83,8 +86,8 @@ plutil -lint "$INFO_PLIST" >/dev/null
 if [[ -n "$SIGN_IDENTITY" ]] && /usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/grep -Fq "\"$SIGN_IDENTITY\""; then
   codesign --force --options runtime --timestamp=none --sign "$SIGN_IDENTITY" "$APP_BUNDLE" >/dev/null
 else
-  echo "warning: $SIGN_IDENTITY not found; using an unstable ad-hoc signature" >&2
-  codesign --force --sign - "$APP_BUNDLE" >/dev/null
+  echo "warning: signing certificate not found; using a fixed-requirement ad-hoc signature" >&2
+  codesign --force --sign - -r="$ADHOC_REQUIREMENT" "$APP_BUNDLE" >/dev/null
 fi
 /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
 
@@ -94,7 +97,7 @@ fi
 if [[ -n "$SIGN_IDENTITY" ]] && /usr/bin/security find-identity -v -p codesigning 2>/dev/null | /usr/bin/grep -Fq "\"$SIGN_IDENTITY\""; then
   codesign --force --options runtime --timestamp=none --sign "$SIGN_IDENTITY" "$INSTALLED_APP_BUNDLE" >/dev/null
 else
-  codesign --force --sign - "$INSTALLED_APP_BUNDLE" >/dev/null
+  codesign --force --sign - -r="$ADHOC_REQUIREMENT" "$INSTALLED_APP_BUNDLE" >/dev/null
 fi
 /usr/bin/codesign --verify --deep --strict "$INSTALLED_APP_BUNDLE"
 

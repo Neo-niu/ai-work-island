@@ -212,6 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hermesStatus: HermesStatus,
         companyQuota: CompanyModelQuota?
     ) {
+        touchBarController.update(groups: groups)
         if RefreshPolicy.shouldApply(previous: latestGroups, next: groups) {
             latestGroups = groups
             latestGroupCount = groups.count
@@ -222,21 +223,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 $0 + $1.threads.filter(\.isUnread).count
             }
             cycler.retainGroups(Set(groups.map(\.id)))
-            touchBarController.update(groups: groups)
         }
 
-        if latestWeeklyLimit != weeklyLimit {
-            latestWeeklyLimit = weeklyLimit
-            touchBarController.showWeeklyLimit(weeklyLimit)
-        }
-        if latestHermesStatus != hermesStatus {
-            latestHermesStatus = hermesStatus
-            touchBarController.showHermesStatus(hermesStatus)
-        }
-        if latestCompanyQuota != companyQuota {
-            latestCompanyQuota = companyQuota
-            touchBarController.showCompanyQuota(companyQuota)
-        }
+        latestWeeklyLimit = weeklyLimit
+        touchBarController.showWeeklyLimit(weeklyLimit)
+        latestHermesStatus = hermesStatus
+        touchBarController.showHermesStatus(hermesStatus)
+        latestCompanyQuota = companyQuota
+        touchBarController.showCompanyQuota(companyQuota)
         updateStatusText()
     }
 

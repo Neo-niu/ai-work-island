@@ -25,21 +25,14 @@ final class TouchBarController: NSObject {
     private let trayItem: NSCustomTouchBarItem
     private var trayItemWasAdded = false
     private var selectedEffort: EffortChoice = .medium
-    private var petFrame = 0
-    private var petTimer: Timer?
+    private var effortApplyWorkItem: DispatchWorkItem?
 
     private lazy var projectStatusView = makeReadOnlyStatusView(
         title: "Codex 空闲",
         symbolName: "circle.dotted"
     )
-    private lazy var tokenUsageView = makeReadOnlyStatusView(
-        title: "周 Token —",
-        symbolName: "chart.bar.fill"
-    )
-    private lazy var companyQuotaView = makeReadOnlyStatusView(
-        title: "公司 —",
-        symbolName: "building.2.fill"
-    )
+    private lazy var tokenUsageView = QuotaProgressView()
+    private lazy var companyQuotaView = QuotaProgressView()
     private lazy var hermesStatusView = makeReadOnlyStatusView(
         title: "Hermes 离线",
         symbolName: "sparkles"
@@ -54,13 +47,14 @@ final class TouchBarController: NSObject {
         )
         slider.numberOfTickMarks = EffortChoice.allCases.count
         slider.allowsTickMarkValuesOnly = true
-        slider.isContinuous = false
+        slider.isContinuous = true
         slider.controlSize = .small
         slider.translatesAutoresizingMaskIntoConstraints = false
         slider.widthAnchor.constraint(equalToConstant: 150).isActive = true
         slider.setAccessibilityLabel("推理程度")
         return slider
     }()
+    private lazy var effortFeedbackView = EffortFeedbackView()
     private lazy var effortLabel: NSTextField = {
         let label = NSTextField(labelWithString: effortDisplayTitle)
         label.textColor = .white
@@ -69,17 +63,7 @@ final class TouchBarController: NSObject {
         label.setContentHuggingPriority(.required, for: .horizontal)
         return label
     }()
-    private lazy var petLabel: NSTextField = {
-        let label = NSTextField(labelWithString: "🐈")
-        label.font = .systemFont(ofSize: 23)
-        label.alignment = .center
-        label.isBezeled = false
-        label.drawsBackground = false
-        label.isEditable = false
-        label.isSelectable = false
-        label.setAccessibilityLabel("Touch Bar 宠物")
-        return label
-    }()
+    private lazy var petView = MechanicalPetView()
 
     override init() {
         let item = NSCustomTouchBarItem(identifier: Self.trayItemIdentifier)
@@ -100,7 +84,7 @@ final class TouchBarController: NSObject {
 
     deinit {
         MainActor.assumeIsolated {
-            petTimer?.invalidate()
+            effortApplyWorkItem?.cancel()
             if isPresented {
                 CTBDismissSystemModalTouchBar(touchBar)
                 CTBSetCloseBoxVisible(true)
@@ -113,22 +97,27 @@ final class TouchBarController: NSObject {
     }
 
     func update(groups: [ProjectGroup]) {
-        let running = groups.reduce(0) { $0 + $1.threads.filter(\.isActive).count }
+        let threads = groups.flatMap(\.threads)
+        let running = threads.filter(\.isActive).count
         let unread = groups.reduce(0) { $0 + $1.threads.filter(\.isUnread).count }
+        let recentlyUpdated = threads.contains { Date().timeIntervalSince($0.updatedAt) < 5 }
         let title: String
-        if running == 0, unread == 0 {
-            title = "Codex 空闲"
+        if recentlyUpdated, running > 0 {
+            title = "Codex 思考中 · \(running)"
+        } else if running > 0 {
+            title = "Codex 运行中 · \(running)"
         } else if unread > 0 {
-            title = "\(groups.count)项目 · \(running)运行 · \(unread)待读"
+            title = "Codex 已完成 · \(unread)"
         } else {
-            title = "\(groups.count)项目 · \(running)运行"
+            title = "Codex 空闲"
         }
         update(
             projectStatusView,
             title: title,
-            symbolName: unread > 0 ? "bell.badge.fill" : (running > 0 ? "play.circle.fill" : "circle.dotted"),
+            symbolName: unread > 0 ? "bell.badge.fill" : (running > 0 ? "waveform.circle.fill" : "circle.dotted"),
             color: unread > 0 ? .systemPurple : .white
         )
+        petView.setActive(running > 0)
     }
 
     func showSelectedEffort(_ choice: EffortChoice) {
@@ -136,20 +125,23 @@ final class TouchBarController: NSObject {
         effortSlider.doubleValue = Double(EffortChoice.allCases.firstIndex(of: choice) ?? 1)
         effortLabel.stringValue = effortDisplayTitle
         effortSlider.setAccessibilityValue(choice.title)
+        effortFeedbackView.select(
+            index: EffortChoice.allCases.firstIndex(of: choice) ?? 1,
+            animated: true
+        )
     }
 
     func showWeeklyLimit(_ usage: WeeklyLimitUsage?) {
         guard let usage else {
-            update(tokenUsageView, title: "周 Token —", symbolName: "chart.bar.fill")
+            tokenUsageView.update(title: "周额度 —", usedPercent: nil)
             return
         }
         let used = Int(usage.usedPercent.rounded())
         let low = usage.remainingPercent <= 20
-        update(
-            tokenUsageView,
-            title: "周用\(used)% · 余\(usage.remainingPercent)%",
-            symbolName: low ? "exclamationmark.triangle.fill" : "chart.bar.fill",
-            color: low ? .systemRed : .white
+        tokenUsageView.update(
+            title: "周 \(used)%",
+            usedPercent: used,
+            isLow: low
         )
     }
 
@@ -166,17 +158,12 @@ final class TouchBarController: NSObject {
 
     func showCompanyQuota(_ quota: CompanyModelQuota?) {
         guard let quota else {
-            update(companyQuotaView, title: "公司 —", symbolName: "building.2.fill")
+            companyQuotaView.update(title: "公司 —", usedPercent: nil)
             return
         }
         let used = max(0, min(100, 100 - quota.remainingPercent))
         let low = quota.remainingPercent <= 20
-        update(
-            companyQuotaView,
-            title: "公司用\(used)%",
-            symbolName: low ? "exclamationmark.triangle.fill" : "building.2.fill",
-            color: low ? .systemRed : .white
-        )
+        companyQuotaView.update(title: "公司 \(used)%", usedPercent: used, isLow: low)
     }
 
     @discardableResult
@@ -188,14 +175,11 @@ final class TouchBarController: NSObject {
         }
         CTBSetCloseBoxVisible(true)
         isPresented = CTBPresentSystemModalTouchBar(touchBar, Self.trayItemIdentifier.rawValue)
-        if isPresented { startPetAnimation() }
         return isPresented
     }
 
     func dismiss() {
         guard isPresented else { return }
-        petTimer?.invalidate()
-        petTimer = nil
         CTBDismissSystemModalTouchBar(touchBar)
         CTBSetCloseBoxVisible(true)
         isPresented = false
@@ -248,36 +232,24 @@ final class TouchBarController: NSObject {
     }
 
     private func makeEffortView() -> NSView {
-        let stack = NSStackView(views: [effortLabel, effortSlider])
+        let stack = NSStackView(views: [effortLabel, effortSlider, effortFeedbackView])
         stack.orientation = .vertical
         stack.alignment = .centerX
-        stack.spacing = -2
+        stack.spacing = -3
         stack.edgeInsets = NSEdgeInsets(top: 0, left: 4, bottom: 0, right: 4)
         return stack
-    }
-
-    private func startPetAnimation() {
-        petTimer?.invalidate()
-        petTimer = Timer.scheduledTimer(
-            timeInterval: 0.8,
-            target: self,
-            selector: #selector(advancePetFrame),
-            userInfo: nil,
-            repeats: true
-        )
-    }
-
-    @objc private func advancePetFrame() {
-        let frames = ["🐈", "🐈‍⬛", "🐾", "🐈"]
-        petFrame = (petFrame + 1) % frames.count
-        petLabel.stringValue = frames[petFrame]
     }
 
     @objc private func effortSliderChanged(_ sender: NSSlider) {
         let index = max(0, min(EffortChoice.allCases.count - 1, Int(sender.doubleValue.rounded())))
         let choice = EffortChoice.allCases[index]
         showSelectedEffort(choice)
-        onEffortSelected?(choice)
+        effortApplyWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.onEffortSelected?(choice)
+        }
+        effortApplyWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: workItem)
     }
 
     @objc private func showFromTray() {
@@ -307,7 +279,7 @@ extension TouchBarController: NSTouchBarDelegate {
             item.view = makeEffortView()
         case Self.petItemIdentifier:
             item.customizationLabel = "Touch Bar 宠物"
-            item.view = petLabel
+            item.view = petView
         default:
             return nil
         }
