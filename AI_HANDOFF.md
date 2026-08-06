@@ -17,6 +17,7 @@
 - `TouchBarController` 默认只展示 Codex 项目/任务汇总、周 Token 使用、公司额度、Hermes 聚合状态和动画宠物。
 - 主界面唯一业务交互是五档推理程度滑块；项目跳转、项目展开和速度选择已从 Touch Bar 主界面移除。
 - 宠物当前使用系统 Emoji 帧，不引入图片资源或网络依赖。
+- 菜单栏设置、状态提示和用户可见错误统一使用中文；诊断命令仍保留英文键名，方便脚本解析。
 - App 仅在 Codex 或 Hermes 前台时展开。
 - 构建目录默认放 `/tmp`，避免 iCloud 路径中的 SwiftPM 锁竞争。
 - 构建产物保留在 `dist`，实际运行副本安装到 `/Applications`，避免 iCloud 改写 Bundle 元数据。

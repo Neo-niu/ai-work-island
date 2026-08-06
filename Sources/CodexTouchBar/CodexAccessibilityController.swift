@@ -42,23 +42,23 @@ final class CodexAccessibilityController {
         var errorDescription: String? {
             switch self {
             case .accessibilityPermissionRequired:
-                "Enable Codex Touch Bar in System Settings → Privacy & Security → Accessibility, then try again."
+                "请在系统设置 → 隐私与安全性 → 辅助功能中启用本应用，然后重试。"
             case .codexNotRunning:
-                "Codex is not running."
+                "Codex 当前未运行。"
             case .codexMustBeFrontmost:
-                "Open the task in Codex, then try again."
+                "请先在 Codex 中打开一个任务，然后重试。"
             case .codexRestartRequired:
-                "Quit and reopen Codex once to enable the Effort and Speed controls."
+                "请退出并重新打开一次 Codex，以启用推理程度控制。"
             case let .commandBridgeUnavailable(message):
-                "Codex command bridge could not be prepared: \(message)"
+                "无法准备 Codex 控制桥接：\(message)"
             case .controlNotFound(.effort):
-                "The effort control was not found in the visible Codex task."
+                "当前 Codex 任务中未找到推理程度控件。"
             case .controlNotFound(.speed):
-                "The speed control was not found in the visible Codex task."
+                "当前 Codex 任务中未找到响应速度控件。"
             case let .optionNotFound(option):
-                "The Codex option “\(option)” was not found."
+                "未找到 Codex 选项“\(option)”。"
             case .actionFailed:
-                "Codex did not accept the setting change."
+                "Codex 未接受本次设置更改。"
             }
         }
     }

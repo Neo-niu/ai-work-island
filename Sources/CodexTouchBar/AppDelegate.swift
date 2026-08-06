@@ -107,13 +107,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let menu = NSMenu()
-        let statusMenuItem = NSMenuItem(title: "Looking for active Codex tasks…", action: nil, keyEquivalent: "")
+        let statusMenuItem = NSMenuItem(title: "正在读取 Codex 状态…", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
         menu.addItem(.separator())
 
         let enabledMenuItem = NSMenuItem(
-            title: "Show when Codex is active",
+            title: "Codex 或 Hermes 在前台时显示",
             action: #selector(toggleEnabled(_:)),
             keyEquivalent: ""
         )
@@ -121,20 +121,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         enabledMenuItem.state = isEnabled ? .on : .off
         menu.addItem(enabledMenuItem)
 
-        let refreshItem = NSMenuItem(title: "Refresh Now", action: #selector(refreshNow), keyEquivalent: "r")
+        let refreshItem = NSMenuItem(title: "立即刷新", action: #selector(refreshNow), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
 
-        let openCodexItem = NSMenuItem(title: "Open Codex", action: #selector(openCodex), keyEquivalent: "o")
+        let openCodexItem = NSMenuItem(title: "打开 Codex", action: #selector(openCodex), keyEquivalent: "o")
         openCodexItem.target = self
         menu.addItem(openCodexItem)
 
-        let openHermesItem = NSMenuItem(title: "Open Hermes", action: #selector(openHermes), keyEquivalent: "h")
+        let openHermesItem = NSMenuItem(title: "打开 Hermes", action: #selector(openHermes), keyEquivalent: "h")
         openHermesItem.target = self
         menu.addItem(openHermesItem)
 
         let accessibilityItem = NSMenuItem(
-            title: "Enable Effort & Speed Controls…",
+            title: "启用推理程度控制…",
             action: #selector(requestAccessibilityAccess),
             keyEquivalent: ""
         )
@@ -142,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(accessibilityItem)
 
         menu.addItem(.separator())
-        let quitItem = NSMenuItem(title: "Quit Codex Hermes Touch Bar", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "退出 Codex Hermes Touch Bar", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -152,7 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.enabledMenuItem = enabledMenuItem
 
         if !touchBarController.isAvailable {
-            statusMenuItem.title = "System-modal Touch Bar API unavailable"
+            statusMenuItem.title = "当前系统不支持 Touch Bar 常驻接口"
             enabledMenuItem.isEnabled = false
         }
     }
@@ -224,7 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatusText() {
         guard touchBarController.isAvailable else {
-            statusMenuItem?.title = "System-modal Touch Bar API unavailable"
+            statusMenuItem?.title = "当前系统不支持 Touch Bar 常驻接口"
             return
         }
 
@@ -235,14 +235,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transientStatus = nil
 
         if latestThreadCount == 0, latestUnreadThreadCount == 0 {
-            statusMenuItem?.title = "Codex idle · \(latestHermesStatus.compactTitle)"
+            statusMenuItem?.title = "Codex 空闲 · \(latestHermesStatus.compactTitle)"
         } else {
-            let taskWord = latestThreadCount == 1 ? "task" : "tasks"
-            let projectWord = latestGroupCount == 1 ? "project" : "projects"
             let unreadStatus = latestUnreadThreadCount > 0
-                ? " · \(latestUnreadThreadCount) unread"
+                ? " · \(latestUnreadThreadCount) 个待读"
                 : ""
-            statusMenuItem?.title = "\(latestThreadCount) active \(taskWord)\(unreadStatus) · \(latestGroupCount) \(projectWord)"
+            statusMenuItem?.title = "\(latestThreadCount) 个运行任务\(unreadStatus) · \(latestGroupCount) 个项目"
         }
     }
 
@@ -296,7 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try await accessibilityController.apply(effort: choice)
                 touchBarController.showSelectedEffort(choice)
-                showTransientStatus("Effort set to \(choice.title)")
+                showTransientStatus("推理程度已设为\(choice.shortTitle)")
             } catch {
                 showSettingError(error)
             }
@@ -309,7 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try await accessibilityController.apply(speed: choice)
                 touchBarController.showSelectedSpeed(choice)
-                showTransientStatus("Speed set to \(choice.title)")
+                showTransientStatus("响应速度已设为\(choice.title)")
             } catch {
                 showSettingError(error)
             }
@@ -374,10 +372,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func requestAccessibilityAccess() {
         if accessibilityController.requestAccessibilityAccess() {
-            showTransientStatus("Accessibility access is enabled")
+            showTransientStatus("辅助功能权限已启用")
         } else {
             showTransientStatus(
-                "Enable Codex Touch Bar in System Settings → Privacy & Security → Accessibility",
+                "请在系统设置 → 隐私与安全性 → 辅助功能中启用本应用",
                 duration: 15
             )
         }
