@@ -38,6 +38,7 @@ public actor RolloutScanner {
     private let stateDatabase: URL?
     private let globalStateFile: URL?
     private let recentFileInterval: TimeInterval
+    private let activeStaleInterval: TimeInterval
     private var cache: [URL: CachedRollout] = [:]
     private var lastGlobalStateValues: GlobalStateValues?
 
@@ -48,12 +49,14 @@ public actor RolloutScanner {
             .appendingPathComponent(".codex/state_5.sqlite"),
         globalStateFile: URL? = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/.codex-global-state.json"),
-        recentFileInterval: TimeInterval = 7 * 24 * 60 * 60
+        recentFileInterval: TimeInterval = 7 * 24 * 60 * 60,
+        activeStaleInterval: TimeInterval = 30 * 60
     ) {
         self.sessionsRoot = sessionsRoot
         self.stateDatabase = stateDatabase
         self.globalStateFile = globalStateFile
         self.recentFileInterval = recentFileInterval
+        self.activeStaleInterval = activeStaleInterval
     }
 
     public func scan() -> [ActiveThread] {
@@ -86,7 +89,7 @@ public actor RolloutScanner {
                     )
                 }
                 weeklyLimits.append(contentsOf: records.compactMap(\.weeklyLimit))
-                let activeRecords = records.filter(\.isActive)
+                let activeRecords = records.filter(isRecentlyActive)
                 let activeStartedAt = activeRecords.map(\.thread.startedAt).min()
                 let isUnread = activeStartedAt == nil && unreadThreadIDs.contains(root.id)
 
@@ -119,7 +122,8 @@ public actor RolloutScanner {
                     weeklyLimits.append(weeklyLimit)
                 }
                 let isUnread = !record.isActive && unreadThreadIDs.contains(record.thread.id)
-                guard record.isActive || isUnread else {
+                let isActive = isRecentlyActive(record)
+                guard isActive || isUnread else {
                     continue
                 }
                 let visibleThread = ActiveThread(
@@ -128,7 +132,7 @@ public actor RolloutScanner {
                     startedAt: record.thread.startedAt,
                     updatedAt: record.thread.updatedAt,
                     projectRecencyAt: record.thread.projectRecencyAt,
-                    isActive: record.isActive,
+                    isActive: isActive,
                     isUnread: isUnread
                 )
                 let existing = visibleThreadsByID[record.thread.id]
@@ -157,6 +161,10 @@ public actor RolloutScanner {
             weeklyLimit: latestWeeklyLimit,
             selectedProjectRoots: globalState.selectedProjectRoots
         )
+    }
+
+    private func isRecentlyActive(_ record: RolloutRecord) -> Bool {
+        record.isActive && Date().timeIntervalSince(record.thread.updatedAt) <= activeStaleInterval
     }
 
     private func globalStateValues(fileManager: FileManager) -> GlobalStateValues {

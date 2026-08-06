@@ -47,6 +47,35 @@ import Testing
     #expect(threads.first?.cwd.path == "/tmp/active")
 }
 
+@Test func ignoresAStaleTaskStartedWithoutACompletionEvent() async throws {
+    let sessionsRoot = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: sessionsRoot) }
+    try FileManager.default.createDirectory(at: sessionsRoot, withIntermediateDirectories: true)
+
+    let staleRollout = sessionsRoot.appendingPathComponent("stale.jsonl")
+    try rollout(
+        id: "stale-thread",
+        cwd: "/tmp/stale",
+        events: ["task_started"],
+        at: staleRollout
+    )
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date().addingTimeInterval(-120)],
+        ofItemAtPath: staleRollout.path
+    )
+
+    let scanner = RolloutScanner(
+        sessionsRoot: sessionsRoot,
+        stateDatabase: nil,
+        globalStateFile: nil,
+        recentFileInterval: 300,
+        activeStaleInterval: 60
+    )
+
+    #expect(await scanner.scan().isEmpty)
+}
+
 @Test func reportsVisibleRootWhenItsDelegatedTaskIsActive() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)

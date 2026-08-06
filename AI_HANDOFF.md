@@ -19,6 +19,7 @@
 - 宠物改为原创机械光核 PNG，构建脚本将 `Resources/mechanical-touchbar-pet-96.png` 复制进 App；动画由 Core Animation 实现，不依赖网络。
 - 两个额度各使用一条横向进度条；推理滑块连续更新视觉档位，300ms 防抖后才发送设置。
 - Codex 状态每次轮询都会重算，只展示“处理中 N · 待查看 N”；处理中按 `isActive` 会话计数，待查看按 `isUnread` 会话计数。
+- `RolloutScanner` 对缺少 `task_complete` 的异常日志增加 30 分钟活跃失效时间，避免历史 `task_started` 永久占用处理中计数。
 - 菜单栏设置、状态提示和用户可见错误统一使用中文；诊断命令仍保留英文键名，方便脚本解析。
 - 拖动推理程度滑块只检查辅助功能权限，不主动触发系统授权弹窗；只有菜单“启用推理程度控制…”会请求系统授权。
 - 无开发者证书时使用固定 Bundle ID 的 ad-hoc designated requirement，避免默认 `cdhash` requirement 随每次构建变化；首次切换后仍需重新添加一次辅助功能权限。
