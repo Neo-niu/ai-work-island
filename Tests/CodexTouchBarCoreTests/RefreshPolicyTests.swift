@@ -2,9 +2,9 @@
 import Foundation
 import Testing
 
-@Test func refreshPolicyPollsOnlyWhileCodexIsFrontmost() {
-    #expect(RefreshPolicy.pollInterval(codexIsFrontmost: false) == nil)
-    #expect(RefreshPolicy.pollInterval(codexIsFrontmost: true) == 1)
+@Test func refreshPolicyPollsWheneverTheDashboardIsVisible() {
+    #expect(RefreshPolicy.pollInterval(isDashboardVisible: false) == nil)
+    #expect(RefreshPolicy.pollInterval(isDashboardVisible: true) == 1)
 }
 
 @Test func refreshTimerRunsDuringTouchBarEventTracking() {

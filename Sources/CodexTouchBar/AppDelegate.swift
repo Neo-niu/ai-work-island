@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let codexBundleIdentifier = "com.openai.codex"
     private static let hermesBundleIdentifier = "com.nousresearch.hermes.setup"
     private static let enabledDefaultsKey = "touchBarEnabled"
+    private static let alwaysShowDefaultsKey = "touchBarAlwaysShow"
 
     private let scanner = RolloutScanner()
     private let hermesScanner = HermesStatusScanner()
@@ -17,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var statusMenuItem: NSMenuItem?
     private var enabledMenuItem: NSMenuItem?
+    private var alwaysShowMenuItem: NSMenuItem?
     private var refreshTimer: Timer?
     private var refreshInFlight = false
     private var latestGroups: [ProjectGroup]?
@@ -44,6 +46,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set {
             UserDefaults.standard.set(newValue, forKey: Self.enabledDefaultsKey)
         }
+    }
+
+    private var alwaysShow: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.alwaysShowDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.alwaysShowDefaultsKey) }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -113,13 +120,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
 
         let enabledMenuItem = NSMenuItem(
-            title: "Codex 或 Hermes 在前台时显示",
+            title: "启用 Touch Bar 仪表盘",
             action: #selector(toggleEnabled(_:)),
             keyEquivalent: ""
         )
         enabledMenuItem.target = self
         enabledMenuItem.state = isEnabled ? .on : .off
         menu.addItem(enabledMenuItem)
+
+        let alwaysShowMenuItem = NSMenuItem(
+            title: "始终显示（所有应用）",
+            action: #selector(toggleAlwaysShow(_:)),
+            keyEquivalent: ""
+        )
+        alwaysShowMenuItem.target = self
+        alwaysShowMenuItem.state = alwaysShow ? .on : .off
+        menu.addItem(alwaysShowMenuItem)
 
         let refreshItem = NSMenuItem(title: "立即刷新", action: #selector(refreshNow), keyEquivalent: "r")
         refreshItem.target = self
@@ -150,10 +166,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.statusItem = statusItem
         self.statusMenuItem = statusMenuItem
         self.enabledMenuItem = enabledMenuItem
+        self.alwaysShowMenuItem = alwaysShowMenuItem
 
         if !touchBarController.isAvailable {
             statusMenuItem.title = "当前系统不支持 Touch Bar 常驻接口"
             enabledMenuItem.isEnabled = false
+            alwaysShowMenuItem.isEnabled = false
         }
     }
 
@@ -245,7 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updatePresentation() {
-        if isEnabled && isSupportedAppFrontmost && touchBarController.isAvailable {
+        if shouldPresentDashboard && touchBarController.isAvailable {
             _ = touchBarController.present()
         } else {
             touchBarController.dismiss()
@@ -261,12 +279,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return bundleID == Self.codexBundleIdentifier || bundleID == Self.hermesBundleIdentifier
     }
 
+    private var shouldPresentDashboard: Bool {
+        isEnabled && (alwaysShow || isSupportedAppFrontmost)
+    }
+
     private func updateRefreshSchedule() {
         refreshTimer?.invalidate()
         refreshTimer = nil
 
-        guard isEnabled,
-              let interval = RefreshPolicy.pollInterval(codexIsFrontmost: isSupportedAppFrontmost) else {
+        guard let interval = RefreshPolicy.pollInterval(isDashboardVisible: shouldPresentDashboard) else {
             return
         }
         let timer = Timer(
@@ -327,7 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func frontmostApplicationChanged(_ notification: Notification) {
         updateRefreshSchedule()
-        if isEnabled && isSupportedAppFrontmost {
+        if shouldPresentDashboard {
             requestRefresh()
         }
         updatePresentation()
@@ -346,7 +367,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isEnabled.toggle()
         sender.state = isEnabled ? .on : .off
         updateRefreshSchedule()
-        if isEnabled && isCodexFrontmost {
+        if shouldPresentDashboard {
+            requestRefresh()
+        }
+        updatePresentation()
+    }
+
+    @objc private func toggleAlwaysShow(_ sender: NSMenuItem) {
+        alwaysShow.toggle()
+        sender.state = alwaysShow ? .on : .off
+        if alwaysShow, !isEnabled {
+            isEnabled = true
+            enabledMenuItem?.state = .on
+        }
+        updateRefreshSchedule()
+        if shouldPresentDashboard {
             requestRefresh()
         }
         updatePresentation()
