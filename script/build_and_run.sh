@@ -18,7 +18,6 @@ APP_BUNDLE="$DIST_DIR/$DISPLAY_NAME.app"
 INSTALLED_APP_BUNDLE="/Applications/$DISPLAY_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
-APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$PRODUCT_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 
@@ -47,9 +46,8 @@ swift build --disable-sandbox --package-path "$ROOT_DIR" --scratch-path "$SCRATC
 BUILD_BINARY="$(swift build --disable-sandbox --package-path "$ROOT_DIR" --scratch-path "$SCRATCH_DIR" --show-bin-path)/$PRODUCT_NAME"
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS" "$APP_RESOURCES"
+mkdir -p "$APP_MACOS"
 cp "$BUILD_BINARY" "$APP_BINARY"
-cp "$ROOT_DIR/Resources/mechanical-touchbar-pet-96.png" "$APP_RESOURCES/"
 chmod +x "$APP_BINARY"
 
 cat >"$INFO_PLIST" <<PLIST

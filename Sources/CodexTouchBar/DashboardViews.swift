@@ -114,76 +114,141 @@ final class EffortFeedbackView: NSView {
 }
 
 @MainActor
-final class MechanicalPetView: NSView {
-    private let glowLayer = CAGradientLayer()
-    private let imageLayer = CALayer()
+final class SiriPetView: NSView {
+    private let orbLayer = CALayer()
+    private let baseGradient = CAGradientLayer()
+    private let ringLayer = CAShapeLayer()
+    private let blobLayers: [CAGradientLayer] = (0..<4).map { _ in CAGradientLayer() }
+    private var isActive = false
+    private var hasLaidOut = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 42).isActive = true
+        widthAnchor.constraint(equalToConstant: 44).isActive = true
         heightAnchor.constraint(equalToConstant: 30).isActive = true
 
-        glowLayer.type = .radial
-        glowLayer.colors = [
-            NSColor.systemCyan.withAlphaComponent(0.5).cgColor,
-            NSColor.systemPurple.withAlphaComponent(0.18).cgColor,
-            NSColor.clear.cgColor,
-        ]
-        glowLayer.locations = [0, 0.55, 1]
-        glowLayer.startPoint = CGPoint(x: 0.5, y: 0.5)
-        glowLayer.endPoint = CGPoint(x: 1, y: 1)
-        layer?.addSublayer(glowLayer)
+        orbLayer.masksToBounds = true
+        orbLayer.backgroundColor = NSColor.black.withAlphaComponent(0.82).cgColor
+        layer?.addSublayer(orbLayer)
 
-        if let image = Self.loadImage() {
-            imageLayer.contents = image
-            imageLayer.contentsGravity = .resizeAspect
+        baseGradient.colors = [
+            NSColor.systemBlue.cgColor,
+            NSColor.systemPurple.cgColor,
+            NSColor.systemPink.cgColor,
+            NSColor.systemCyan.cgColor,
+        ]
+        baseGradient.startPoint = CGPoint(x: 0, y: 0.5)
+        baseGradient.endPoint = CGPoint(x: 1, y: 0.5)
+        orbLayer.addSublayer(baseGradient)
+
+        let colors: [NSColor] = [.systemCyan, .systemBlue, .systemPurple, .systemPink]
+        for (blob, color) in zip(blobLayers, colors) {
+            blob.type = .radial
+            blob.colors = [color.cgColor, color.withAlphaComponent(0).cgColor]
+            blob.locations = [0, 1]
+            blob.startPoint = CGPoint(x: 0.5, y: 0.5)
+            blob.endPoint = CGPoint(x: 1, y: 1)
+            orbLayer.addSublayer(blob)
         }
-        layer?.addSublayer(imageLayer)
-        setAccessibilityLabel("机械光核宠物")
-        startAnimations(active: false)
+
+        ringLayer.fillColor = NSColor.clear.cgColor
+        ringLayer.lineWidth = 1.4
+        ringLayer.strokeColor = NSColor.systemCyan.withAlphaComponent(0.55).cgColor
+        layer?.addSublayer(ringLayer)
+        setAccessibilityLabel("Siri 风格状态光球")
     }
 
     required init?(coder: NSCoder) { nil }
 
     override func layout() {
         super.layout()
-        glowLayer.frame = bounds.insetBy(dx: 1, dy: -5)
-        imageLayer.frame = bounds.insetBy(dx: 5, dy: 0)
+        let orbFrame = CGRect(x: 7, y: 3, width: 30, height: 24)
+        orbLayer.frame = orbFrame
+        orbLayer.cornerRadius = orbFrame.height / 2
+        baseGradient.frame = orbLayer.bounds
+        for blob in blobLayers {
+            blob.frame = CGRect(x: -4, y: -7, width: 25, height: 25)
+        }
+        ringLayer.frame = bounds
+        ringLayer.path = CGPath(
+            roundedRect: orbFrame.insetBy(dx: -1.2, dy: -1.2),
+            cornerWidth: orbFrame.height / 2,
+            cornerHeight: orbFrame.height / 2,
+            transform: nil
+        )
+        if !hasLaidOut {
+            hasLaidOut = true
+            applyState(animated: false)
+        }
     }
 
     func setActive(_ active: Bool) {
-        startAnimations(active: active)
+        guard active != isActive else { return }
+        isActive = active
+        guard hasLaidOut else { return }
+        applyState(animated: true)
     }
 
-    private func startAnimations(active: Bool) {
-        glowLayer.removeAllAnimations()
-        imageLayer.removeAllAnimations()
+    private func applyState(animated: Bool) {
+        orbLayer.removeAllAnimations()
+        ringLayer.removeAllAnimations()
+        blobLayers.forEach { $0.removeAllAnimations() }
 
-        let glow = CABasicAnimation(keyPath: "opacity")
-        glow.fromValue = active ? 0.35 : 0.18
-        glow.toValue = active ? 0.95 : 0.5
-        glow.duration = active ? 0.65 : 1.8
-        glow.autoreverses = true
-        glow.repeatCount = .infinity
-        glowLayer.add(glow, forKey: "glow")
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(animated ? 0.3 : 0)
+        baseGradient.opacity = isActive ? 0.42 : 0.13
+        ringLayer.opacity = isActive ? 1 : 0.55
+        blobLayers.forEach { $0.opacity = isActive ? 0.9 : 0.12 }
+        orbLayer.shadowColor = NSColor.systemPurple.cgColor
+        orbLayer.shadowRadius = isActive ? 7 : 2
+        orbLayer.shadowOpacity = isActive ? 0.75 : 0.2
+        CATransaction.commit()
 
-        let bob = CABasicAnimation(keyPath: "transform.translation.y")
-        bob.fromValue = -0.7
-        bob.toValue = 0.9
-        bob.duration = active ? 0.55 : 1.45
-        bob.autoreverses = true
-        bob.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        bob.repeatCount = .infinity
-        imageLayer.add(bob, forKey: "bob")
-    }
+        guard isActive else { return }
 
-    private static func loadImage() -> NSImage? {
-        let installed = Bundle.main.resourceURL?.appendingPathComponent("mechanical-touchbar-pet-96.png")
-        if let installed, let image = NSImage(contentsOf: installed) {
-            return image
+        let pulse = CAKeyframeAnimation(keyPath: "transform.scale")
+        pulse.values = [1.0, 1.055, 0.985, 1.0]
+        pulse.keyTimes = [0, 0.35, 0.72, 1]
+        pulse.duration = 1.35
+        pulse.repeatCount = .infinity
+        pulse.timingFunctions = [
+            CAMediaTimingFunction(name: .easeInEaseOut),
+            CAMediaTimingFunction(name: .easeInEaseOut),
+            CAMediaTimingFunction(name: .easeInEaseOut),
+        ]
+        orbLayer.add(pulse, forKey: "siri-pulse")
+
+        let positions: [[CGPoint]] = [
+            [CGPoint(x: 7, y: 7), CGPoint(x: 22, y: 9), CGPoint(x: 15, y: 21), CGPoint(x: 7, y: 7)],
+            [CGPoint(x: 24, y: 18), CGPoint(x: 10, y: 20), CGPoint(x: 17, y: 5), CGPoint(x: 24, y: 18)],
+            [CGPoint(x: 15, y: 4), CGPoint(x: 25, y: 15), CGPoint(x: 6, y: 16), CGPoint(x: 15, y: 4)],
+            [CGPoint(x: 5, y: 17), CGPoint(x: 16, y: 5), CGPoint(x: 25, y: 19), CGPoint(x: 5, y: 17)],
+        ]
+        for (index, blob) in blobLayers.enumerated() {
+            let movement = CAKeyframeAnimation(keyPath: "position")
+            movement.values = positions[index].map { NSValue(point: $0) }
+            movement.keyTimes = [0, 0.34, 0.68, 1]
+            movement.duration = 1.7 + Double(index) * 0.17
+            movement.repeatCount = .infinity
+            movement.timingFunctions = Array(
+                repeating: CAMediaTimingFunction(name: .easeInEaseOut),
+                count: 3
+            )
+            blob.add(movement, forKey: "siri-flow-\(index)")
         }
-        return NSImage(contentsOfFile: "Resources/mechanical-touchbar-pet-96.png")
+
+        let ringColors = CAKeyframeAnimation(keyPath: "strokeColor")
+        ringColors.values = [
+            NSColor.systemCyan.cgColor,
+            NSColor.systemBlue.cgColor,
+            NSColor.systemPurple.cgColor,
+            NSColor.systemPink.cgColor,
+            NSColor.systemCyan.cgColor,
+        ]
+        ringColors.duration = 2.2
+        ringColors.repeatCount = .infinity
+        ringLayer.add(ringColors, forKey: "siri-ring")
     }
 }

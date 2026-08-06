@@ -63,7 +63,7 @@ final class TouchBarController: NSObject {
         label.setContentHuggingPriority(.required, for: .horizontal)
         return label
     }()
-    private lazy var petView = MechanicalPetView()
+    private lazy var petView = SiriPetView()
 
     override init() {
         let item = NSCustomTouchBarItem(identifier: Self.trayItemIdentifier)

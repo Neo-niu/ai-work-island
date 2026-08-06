@@ -117,6 +117,16 @@ import Testing
     #expect(feedback.fittingSize.width == 150)
 }
 
+@MainActor
+@Test func siriPetUsesCompactSizingAndAcceptsBothActivityStates() {
+    let pet = SiriPetView()
+    pet.layoutSubtreeIfNeeded()
+    pet.setActive(true)
+    pet.setActive(false)
+    #expect(pet.fittingSize.width == 44)
+    #expect(pet.fittingSize.height == 30)
+}
+
 @Test func effortChoicesMatchCodexWhileUltraTargetsTheHiddenMaxStep() {
     #expect(EffortChoice.allCases.map(\.rawValue) == [
         "low",

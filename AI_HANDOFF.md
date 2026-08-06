@@ -16,7 +16,7 @@
 - `CompanyQuotaScanner` 每 60 秒通过 Edge 页面内同源请求读取 `/api/v1/users/self`，不提取 Cookie。
 - `TouchBarController` 默认只展示 Codex 项目/任务汇总、周 Token 使用、公司额度、Hermes 聚合状态和动画宠物。
 - 主界面唯一业务交互是五档推理程度滑块；项目跳转、项目展开和速度选择已从 Touch Bar 主界面移除。
-- 宠物改为原创机械光核 PNG，构建脚本将 `Resources/mechanical-touchbar-pet-96.png` 复制进 App；动画由 Core Animation 实现，不依赖网络。
+- 宠物为纯 Core Animation 绘制的 Siri 风格状态光球，不使用 Apple 素材：空闲时低亮静止，处理中时多层径向光团循环移动、外环变色并呼吸缩放。
 - 两个额度各使用一条横向进度条；推理滑块连续更新视觉档位，300ms 防抖后才发送设置。
 - Codex 状态每次轮询都会重算，只展示“处理中 N · 待查看 N”；处理中按 `isActive` 会话计数，待查看按 `isUnread` 会话计数。
 - `RolloutScanner` 对缺少 `task_complete` 的异常日志增加 30 分钟活跃失效时间，避免历史 `task_started` 永久占用处理中计数。
