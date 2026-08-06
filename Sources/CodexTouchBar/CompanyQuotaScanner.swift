@@ -18,15 +18,24 @@ actor CompanyQuotaScanner {
     private func readThroughEdge() async -> CompanyModelQuota? {
         await Task.detached(priority: .utility) {
             let source = """
-            tell application "Microsoft Edge"
-                repeat with browserWindow in windows
-                    repeat with browserTab in tabs of browserWindow
-                        if URL of browserTab starts with "https://model.zhenguanyu.com/" then
-                            return execute browserTab javascript "(()=>{const x=new XMLHttpRequest();x.open('GET','/api/v1/users/self',false);x.send();return x.responseText})()"
-                        end if
+            with timeout of 8 seconds
+                tell application "Microsoft Edge"
+                    repeat with browserWindow in windows
+                        set previousTabIndex to active tab index of browserWindow
+                        set tabIndex to 0
+                        repeat with browserTab in tabs of browserWindow
+                            set tabIndex to tabIndex + 1
+                            if URL of browserTab starts with "https://model.zhenguanyu.com/" then
+                                set active tab index of browserWindow to tabIndex
+                                delay 0.4
+                                set responseText to execute browserTab javascript "(()=>{const x=new XMLHttpRequest();x.open('GET','/api/v1/users/self',false);x.send();return x.responseText})()"
+                                set active tab index of browserWindow to previousTabIndex
+                                return responseText
+                            end if
+                        end repeat
                     end repeat
-                end repeat
-            end tell
+                end tell
+            end timeout
             return ""
             """
             let process = Process()
@@ -37,7 +46,14 @@ actor CompanyQuotaScanner {
             process.standardError = Pipe()
             do {
                 try process.run()
-                process.waitUntilExit()
+                for _ in 0..<100 where process.isRunning {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                if process.isRunning {
+                    process.terminate()
+                    process.waitUntilExit()
+                    return nil
+                }
                 guard process.terminationStatus == 0 else { return nil }
                 let data = output.fileHandleForReading.readDataToEndOfFile()
                 return CompanyModelQuota.parsePlatformResponse(data)
