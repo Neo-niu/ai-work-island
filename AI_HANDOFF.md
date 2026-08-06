@@ -22,6 +22,7 @@
 - 菜单栏设置、状态提示和用户可见错误统一使用中文；诊断命令仍保留英文键名，方便脚本解析。
 - 拖动推理程度滑块只检查辅助功能权限，不主动触发系统授权弹窗；只有菜单“启用推理程度控制…”会请求系统授权。
 - 无开发者证书时使用固定 Bundle ID 的 ad-hoc designated requirement，避免默认 `cdhash` requirement 随每次构建变化；首次切换后仍需重新添加一次辅助功能权限。
+- 公司额度扫描通过后台 `reload` 唤醒 Edge 休眠标签，不改变 `active tab index`；读取失败时保留上次成功缓存，避免用户浏览时闪切到额度页。
 - App 默认仅在 Codex 或 Hermes 前台时展开；菜单可切换“始终显示（所有应用）”，状态持久化在 `touchBarAlwaysShow`。
 - 构建目录默认放 `/tmp`，避免 iCloud 路径中的 SwiftPM 锁竞争。
 - 构建产物保留在 `dist`，实际运行副本安装到 `/Applications`，避免 iCloud 改写 Bundle 元数据。

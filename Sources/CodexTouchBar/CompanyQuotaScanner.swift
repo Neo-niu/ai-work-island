@@ -11,7 +11,9 @@ actor CompanyQuotaScanner {
             return cachedQuota
         }
         lastAttempt = now
-        cachedQuota = await readThroughEdge()
+        if let refreshedQuota = await readThroughEdge() {
+            cachedQuota = refreshedQuota
+        }
         return cachedQuota
     }
 
@@ -21,15 +23,11 @@ actor CompanyQuotaScanner {
             with timeout of 8 seconds
                 tell application "Microsoft Edge"
                     repeat with browserWindow in windows
-                        set previousTabIndex to active tab index of browserWindow
-                        set tabIndex to 0
                         repeat with browserTab in tabs of browserWindow
-                            set tabIndex to tabIndex + 1
                             if URL of browserTab starts with "https://model.zhenguanyu.com/" then
-                                set active tab index of browserWindow to tabIndex
-                                delay 0.4
+                                reload browserTab
+                                delay 0.8
                                 set responseText to execute browserTab javascript "(()=>{const x=new XMLHttpRequest();x.open('GET','/api/v1/users/self',false);x.send();return x.responseText})()"
-                                set active tab index of browserWindow to previousTabIndex
                                 return responseText
                             end if
                         end repeat
