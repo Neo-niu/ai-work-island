@@ -115,8 +115,11 @@ final class EffortFeedbackView: NSView {
 
 @MainActor
 final class SiriPetView: NSView {
+    private let bloomLayer = CAGradientLayer()
     private let orbLayer = CALayer()
     private let baseGradient = CAGradientLayer()
+    private let glassLayer = CAGradientLayer()
+    private let coreLayer = CAShapeLayer()
     private let ringLayer = CAShapeLayer()
     private let blobLayers: [CAGradientLayer] = (0..<4).map { _ in CAGradientLayer() }
     private var isActive = false
@@ -129,17 +132,31 @@ final class SiriPetView: NSView {
         widthAnchor.constraint(equalToConstant: 44).isActive = true
         heightAnchor.constraint(equalToConstant: 30).isActive = true
 
+        bloomLayer.type = .radial
+        bloomLayer.colors = [
+            NSColor.systemCyan.withAlphaComponent(0.55).cgColor,
+            NSColor.systemPurple.withAlphaComponent(0.24).cgColor,
+            NSColor.clear.cgColor,
+        ]
+        bloomLayer.locations = [0, 0.48, 1]
+        bloomLayer.startPoint = CGPoint(x: 0.5, y: 0.5)
+        bloomLayer.endPoint = CGPoint(x: 1, y: 1)
+        layer?.addSublayer(bloomLayer)
+
         orbLayer.masksToBounds = true
         orbLayer.backgroundColor = NSColor.black.withAlphaComponent(0.82).cgColor
         layer?.addSublayer(orbLayer)
 
+        baseGradient.type = .conic
         baseGradient.colors = [
+            NSColor.systemCyan.cgColor,
             NSColor.systemBlue.cgColor,
             NSColor.systemPurple.cgColor,
             NSColor.systemPink.cgColor,
             NSColor.systemCyan.cgColor,
         ]
-        baseGradient.startPoint = CGPoint(x: 0, y: 0.5)
+        baseGradient.locations = [0, 0.22, 0.5, 0.76, 1]
+        baseGradient.startPoint = CGPoint(x: 0.5, y: 0.5)
         baseGradient.endPoint = CGPoint(x: 1, y: 0.5)
         orbLayer.addSublayer(baseGradient)
 
@@ -153,6 +170,19 @@ final class SiriPetView: NSView {
             orbLayer.addSublayer(blob)
         }
 
+        coreLayer.fillColor = NSColor.black.withAlphaComponent(0.24).cgColor
+        orbLayer.addSublayer(coreLayer)
+
+        glassLayer.colors = [
+            NSColor.white.withAlphaComponent(0.34).cgColor,
+            NSColor.white.withAlphaComponent(0.04).cgColor,
+            NSColor.clear.cgColor,
+        ]
+        glassLayer.locations = [0, 0.34, 0.7]
+        glassLayer.startPoint = CGPoint(x: 0.5, y: 0)
+        glassLayer.endPoint = CGPoint(x: 0.5, y: 1)
+        orbLayer.addSublayer(glassLayer)
+
         ringLayer.fillColor = NSColor.clear.cgColor
         ringLayer.lineWidth = 1.4
         ringLayer.strokeColor = NSColor.systemCyan.withAlphaComponent(0.55).cgColor
@@ -164,12 +194,27 @@ final class SiriPetView: NSView {
 
     override func layout() {
         super.layout()
-        let orbFrame = CGRect(x: 7, y: 3, width: 30, height: 24)
+        let orbFrame = CGRect(x: 9, y: 2, width: 26, height: 26)
+        bloomLayer.frame = CGRect(x: 1, y: -6, width: 42, height: 42)
         orbLayer.frame = orbFrame
         orbLayer.cornerRadius = orbFrame.height / 2
         baseGradient.frame = orbLayer.bounds
-        for blob in blobLayers {
-            blob.frame = CGRect(x: -4, y: -7, width: 25, height: 25)
+        glassLayer.frame = orbLayer.bounds
+        coreLayer.frame = orbLayer.bounds
+        coreLayer.path = CGPath(
+            ellipseIn: CGRect(x: 7, y: 7, width: 12, height: 12),
+            transform: nil
+        )
+        let idlePositions = [
+            CGPoint(x: 7, y: 8),
+            CGPoint(x: 19, y: 18),
+            CGPoint(x: 17, y: 6),
+            CGPoint(x: 8, y: 19),
+        ]
+        for (index, blob) in blobLayers.enumerated() {
+            let size: CGFloat = index.isMultiple(of: 2) ? 24 : 21
+            blob.bounds = CGRect(x: 0, y: 0, width: size, height: size)
+            blob.position = idlePositions[index]
         }
         ringLayer.frame = bounds
         ringLayer.path = CGPath(
@@ -193,50 +238,95 @@ final class SiriPetView: NSView {
 
     private func applyState(animated: Bool) {
         orbLayer.removeAllAnimations()
+        bloomLayer.removeAllAnimations()
+        baseGradient.removeAllAnimations()
         ringLayer.removeAllAnimations()
         blobLayers.forEach { $0.removeAllAnimations() }
 
         CATransaction.begin()
         CATransaction.setAnimationDuration(animated ? 0.3 : 0)
-        baseGradient.opacity = isActive ? 0.42 : 0.13
-        ringLayer.opacity = isActive ? 1 : 0.55
-        blobLayers.forEach { $0.opacity = isActive ? 0.9 : 0.12 }
-        orbLayer.shadowColor = NSColor.systemPurple.cgColor
-        orbLayer.shadowRadius = isActive ? 7 : 2
-        orbLayer.shadowOpacity = isActive ? 0.75 : 0.2
+        baseGradient.opacity = isActive ? 0.58 : 0.17
+        glassLayer.opacity = isActive ? 0.88 : 0.5
+        coreLayer.opacity = isActive ? 0.6 : 0.84
+        ringLayer.opacity = isActive ? 1 : 0.48
+        ringLayer.lineWidth = isActive ? 1.5 : 1.05
+        bloomLayer.opacity = isActive ? 0.72 : 0.18
+        blobLayers.forEach { $0.opacity = isActive ? 0.88 : 0.1 }
         CATransaction.commit()
 
-        guard isActive else { return }
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+
+        let gradientRotation = CABasicAnimation(keyPath: "transform.rotation.z")
+        gradientRotation.fromValue = 0
+        gradientRotation.toValue = Double.pi * 2
+        gradientRotation.duration = isActive ? 3.2 : 12
+        gradientRotation.repeatCount = .infinity
+        gradientRotation.timingFunction = CAMediaTimingFunction(name: .linear)
+        baseGradient.add(gradientRotation, forKey: "color-drift")
+
+        if !isActive {
+            let idleGlow = CABasicAnimation(keyPath: "opacity")
+            idleGlow.fromValue = 0.13
+            idleGlow.toValue = 0.23
+            idleGlow.duration = 4.8
+            idleGlow.autoreverses = true
+            idleGlow.repeatCount = .infinity
+            idleGlow.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            bloomLayer.add(idleGlow, forKey: "idle-glow")
+            return
+        }
 
         let pulse = CAKeyframeAnimation(keyPath: "transform.scale")
-        pulse.values = [1.0, 1.055, 0.985, 1.0]
-        pulse.keyTimes = [0, 0.35, 0.72, 1]
-        pulse.duration = 1.35
+        pulse.values = [1.0, 1.045, 0.992, 1.025, 1.0]
+        pulse.keyTimes = [0, 0.24, 0.52, 0.76, 1]
+        pulse.duration = 1.6
         pulse.repeatCount = .infinity
-        pulse.timingFunctions = [
-            CAMediaTimingFunction(name: .easeInEaseOut),
-            CAMediaTimingFunction(name: .easeInEaseOut),
-            CAMediaTimingFunction(name: .easeInEaseOut),
-        ]
+        pulse.timingFunctions = Array(
+            repeating: CAMediaTimingFunction(name: .easeInEaseOut),
+            count: 4
+        )
         orbLayer.add(pulse, forKey: "siri-pulse")
 
+        let bloom = CAAnimationGroup()
+        let bloomOpacity = CABasicAnimation(keyPath: "opacity")
+        bloomOpacity.fromValue = 0.38
+        bloomOpacity.toValue = 0.9
+        let bloomScale = CABasicAnimation(keyPath: "transform.scale")
+        bloomScale.fromValue = 0.88
+        bloomScale.toValue = 1.08
+        bloom.animations = [bloomOpacity, bloomScale]
+        bloom.duration = 1.25
+        bloom.autoreverses = true
+        bloom.repeatCount = .infinity
+        bloom.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        bloomLayer.add(bloom, forKey: "active-bloom")
+
         let positions: [[CGPoint]] = [
-            [CGPoint(x: 7, y: 7), CGPoint(x: 22, y: 9), CGPoint(x: 15, y: 21), CGPoint(x: 7, y: 7)],
-            [CGPoint(x: 24, y: 18), CGPoint(x: 10, y: 20), CGPoint(x: 17, y: 5), CGPoint(x: 24, y: 18)],
-            [CGPoint(x: 15, y: 4), CGPoint(x: 25, y: 15), CGPoint(x: 6, y: 16), CGPoint(x: 15, y: 4)],
-            [CGPoint(x: 5, y: 17), CGPoint(x: 16, y: 5), CGPoint(x: 25, y: 19), CGPoint(x: 5, y: 17)],
+            [CGPoint(x: 5, y: 6), CGPoint(x: 21, y: 7), CGPoint(x: 19, y: 21), CGPoint(x: 7, y: 19), CGPoint(x: 5, y: 6)],
+            [CGPoint(x: 22, y: 18), CGPoint(x: 12, y: 23), CGPoint(x: 5, y: 11), CGPoint(x: 17, y: 4), CGPoint(x: 22, y: 18)],
+            [CGPoint(x: 13, y: 3), CGPoint(x: 23, y: 13), CGPoint(x: 13, y: 23), CGPoint(x: 3, y: 13), CGPoint(x: 13, y: 3)],
+            [CGPoint(x: 4, y: 18), CGPoint(x: 8, y: 5), CGPoint(x: 22, y: 8), CGPoint(x: 20, y: 21), CGPoint(x: 4, y: 18)],
         ]
         for (index, blob) in blobLayers.enumerated() {
             let movement = CAKeyframeAnimation(keyPath: "position")
             movement.values = positions[index].map { NSValue(point: $0) }
-            movement.keyTimes = [0, 0.34, 0.68, 1]
-            movement.duration = 1.7 + Double(index) * 0.17
+            movement.keyTimes = [0, 0.24, 0.5, 0.76, 1]
+            movement.duration = 2.05 + Double(index) * 0.19
             movement.repeatCount = .infinity
             movement.timingFunctions = Array(
                 repeating: CAMediaTimingFunction(name: .easeInEaseOut),
-                count: 3
+                count: 4
             )
+            movement.beginTime = CACurrentMediaTime() + Double(index) * 0.11
             blob.add(movement, forKey: "siri-flow-\(index)")
+
+            let shimmer = CABasicAnimation(keyPath: "opacity")
+            shimmer.fromValue = 0.5 + Double(index) * 0.05
+            shimmer.toValue = 1
+            shimmer.duration = 0.85 + Double(index) * 0.12
+            shimmer.autoreverses = true
+            shimmer.repeatCount = .infinity
+            blob.add(shimmer, forKey: "siri-shimmer-\(index)")
         }
 
         let ringColors = CAKeyframeAnimation(keyPath: "strokeColor")
@@ -247,8 +337,17 @@ final class SiriPetView: NSView {
             NSColor.systemPink.cgColor,
             NSColor.systemCyan.cgColor,
         ]
-        ringColors.duration = 2.2
+        ringColors.duration = 2.6
         ringColors.repeatCount = .infinity
         ringLayer.add(ringColors, forKey: "siri-ring")
+
+        let ringBreath = CABasicAnimation(keyPath: "lineWidth")
+        ringBreath.fromValue = 1.1
+        ringBreath.toValue = 1.85
+        ringBreath.duration = 1.3
+        ringBreath.autoreverses = true
+        ringBreath.repeatCount = .infinity
+        ringBreath.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        ringLayer.add(ringBreath, forKey: "ring-breath")
     }
 }
