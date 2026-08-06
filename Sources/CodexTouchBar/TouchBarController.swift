@@ -98,26 +98,16 @@ final class TouchBarController: NSObject {
 
     func update(groups: [ProjectGroup]) {
         let threads = groups.flatMap(\.threads)
-        let running = threads.filter(\.isActive).count
-        let unread = groups.reduce(0) { $0 + $1.threads.filter(\.isUnread).count }
-        let recentlyUpdated = threads.contains { Date().timeIntervalSince($0.updatedAt) < 5 }
-        let title: String
-        if recentlyUpdated, running > 0 {
-            title = "Codex 思考中 · \(running)"
-        } else if running > 0 {
-            title = "Codex 运行中 · \(running)"
-        } else if unread > 0 {
-            title = "Codex 已完成 · \(unread)"
-        } else {
-            title = "Codex 空闲"
-        }
+        let processing = threads.filter(\.isActive).count
+        let unread = threads.filter(\.isUnread).count
+        let title = "处理中 \(processing) · 待查看 \(unread)"
         update(
             projectStatusView,
             title: title,
-            symbolName: unread > 0 ? "bell.badge.fill" : (running > 0 ? "waveform.circle.fill" : "circle.dotted"),
+            symbolName: unread > 0 ? "bell.badge.fill" : (processing > 0 ? "waveform.circle.fill" : "circle.dotted"),
             color: unread > 0 ? .systemPurple : .white
         )
-        petView.setActive(running > 0)
+        petView.setActive(processing > 0)
     }
 
     func showSelectedEffort(_ choice: EffortChoice) {

@@ -31,7 +31,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         failedTasks: 0
     )
     private var latestCompanyQuota: CompanyModelQuota?
-    private var latestGroupCount = 0
     private var latestThreadCount = 0
     private var latestUnreadThreadCount = 0
     private var transientStatus: (message: String, expiresAt: Date)?
@@ -215,7 +214,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         touchBarController.update(groups: groups)
         if RefreshPolicy.shouldApply(previous: latestGroups, next: groups) {
             latestGroups = groups
-            latestGroupCount = groups.count
             latestThreadCount = groups.reduce(0) {
                 $0 + $1.threads.filter(\.isActive).count
             }
@@ -247,12 +245,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         transientStatus = nil
 
         if latestThreadCount == 0, latestUnreadThreadCount == 0 {
-            statusMenuItem?.title = "Codex 空闲 · \(latestHermesStatus.compactTitle)"
+            statusMenuItem?.title = "处理中 0 · 待查看 0"
         } else {
-            let unreadStatus = latestUnreadThreadCount > 0
-                ? " · \(latestUnreadThreadCount) 个待读"
-                : ""
-            statusMenuItem?.title = "\(latestThreadCount) 个运行任务\(unreadStatus) · \(latestGroupCount) 个项目"
+            statusMenuItem?.title = "处理中 \(latestThreadCount) · 待查看 \(latestUnreadThreadCount)"
         }
     }
 
