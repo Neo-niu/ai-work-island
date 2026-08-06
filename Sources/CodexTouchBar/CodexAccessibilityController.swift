@@ -64,8 +64,15 @@ final class CodexAccessibilityController {
     }
 
     func requestAccessibilityAccess() -> Bool {
+        if AXIsProcessTrusted() {
+            return true
+        }
         let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
+    }
+
+    func hasAccessibilityAccess() -> Bool {
+        AXIsProcessTrusted()
     }
 
     func selectedSidebarProjectName() -> String? {
@@ -142,7 +149,7 @@ final class CodexAccessibilityController {
     }
 
     private func prepareCommandBridge() throws {
-        guard requestAccessibilityAccess() else {
+        guard hasAccessibilityAccess() else {
             throw ControllerError.accessibilityPermissionRequired
         }
         guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.codexBundleIdentifier else {
