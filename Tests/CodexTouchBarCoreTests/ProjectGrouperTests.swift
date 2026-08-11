@@ -26,7 +26,7 @@ import Testing
     let grouper = ProjectGrouper(scratchRoot: scratchRoot, homeDirectory: root)
     let groups = grouper.groups(from: threads)
 
-    #expect(groups.map(\.name) == ["AviaSurveil360", "Görevler"])
+    #expect(groups.map(\.name) == ["AviaSurveil360", "任务"])
     #expect(groups[0].threads.map(\.id) == ["avia-2", "avia-1"])
     #expect(groups[0].hasUnread)
     #expect(!groups[1].hasUnread)

@@ -13,11 +13,13 @@ public actor RolloutScanner {
     private struct RolloutRecord {
         let thread: ActiveThread
         let isActive: Bool
+        let shortTermLimit: WeeklyLimitUsage?
         let weeklyLimit: WeeklyLimitUsage?
     }
 
     private struct LatestRolloutEvents {
         let task: RolloutTaskEvent?
+        let shortTermLimit: WeeklyLimitUsage?
         let weeklyLimit: WeeklyLimitUsage?
     }
 
@@ -28,6 +30,7 @@ public actor RolloutScanner {
 
     private struct IndexedThreadRoot {
         let id: String
+        let title: String
         let cwd: URL
         let updatedAt: Date
         let projectRecencyAt: Date
@@ -37,7 +40,9 @@ public actor RolloutScanner {
     private let sessionsRoot: URL
     private let stateDatabase: URL?
     private let globalStateFile: URL?
+    private let sessionIndexFile: URL?
     private let recentFileInterval: TimeInterval
+    private let activeStaleInterval: TimeInterval
     private var cache: [URL: CachedRollout] = [:]
     private var lastGlobalStateValues: GlobalStateValues?
 
@@ -48,16 +53,67 @@ public actor RolloutScanner {
             .appendingPathComponent(".codex/state_5.sqlite"),
         globalStateFile: URL? = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/.codex-global-state.json"),
-        recentFileInterval: TimeInterval = 7 * 24 * 60 * 60
+        sessionIndexFile: URL? = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/session_index.jsonl"),
+        recentFileInterval: TimeInterval = 7 * 24 * 60 * 60,
+        activeStaleInterval: TimeInterval = 30 * 60
     ) {
         self.sessionsRoot = sessionsRoot
         self.stateDatabase = stateDatabase
         self.globalStateFile = globalStateFile
+        self.sessionIndexFile = sessionIndexFile
         self.recentFileInterval = recentFileInterval
+        self.activeStaleInterval = activeStaleInterval
     }
 
     public func scan() -> [ActiveThread] {
         scanSnapshot().threads
+    }
+
+    public func currentReasoningEffort() -> String? {
+        currentThreadReasoningSetting()?.effort
+    }
+
+    public func currentThreadReasoningSetting() -> CurrentThreadReasoningSetting? {
+        guard let stateDatabase,
+              FileManager.default.fileExists(atPath: stateDatabase.path) else {
+            return nil
+        }
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(
+            stateDatabase.path,
+            &database,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX,
+            nil
+        ) == SQLITE_OK, let database else {
+            return nil
+        }
+        defer { sqlite3_close(database) }
+
+        let sql = """
+        SELECT id, model, reasoning_effort
+        FROM threads
+        WHERE archived = 0
+        ORDER BY COALESCE(recency_at_ms, updated_at_ms, updated_at * 1000) DESC
+        LIMIT 1
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW,
+              let idText = sqlite3_column_text(statement, 0),
+              let modelText = sqlite3_column_text(statement, 1),
+              let effortText = sqlite3_column_text(statement, 2) else {
+            return nil
+        }
+        return CurrentThreadReasoningSetting(
+            threadID: String(cString: idText),
+            model: String(cString: modelText),
+            effort: String(cString: effortText)
+        )
     }
 
     public func scanSnapshot() -> RolloutSnapshot {
@@ -70,7 +126,9 @@ public actor RolloutScanner {
         let cutoff = Date().addingTimeInterval(-recentFileInterval)
         let globalState = globalStateValues(fileManager: fileManager)
         let unreadThreadIDs = globalState.unreadThreadIDs
+        let currentThreadNames = sessionIndexThreadNames(fileManager: fileManager)
         var seenURLs = Set<URL>()
+        var shortTermLimits: [WeeklyLimitUsage] = []
         var weeklyLimits: [WeeklyLimitUsage] = []
         let visibleThreads: [ActiveThread]
 
@@ -85,8 +143,9 @@ public actor RolloutScanner {
                         seenURLs: &seenURLs
                     )
                 }
+                shortTermLimits.append(contentsOf: records.compactMap(\.shortTermLimit))
                 weeklyLimits.append(contentsOf: records.compactMap(\.weeklyLimit))
-                let activeRecords = records.filter(\.isActive)
+                let activeRecords = records.filter(isRecentlyActive)
                 let activeStartedAt = activeRecords.map(\.thread.startedAt).min()
                 let isUnread = activeStartedAt == nil && unreadThreadIDs.contains(root.id)
 
@@ -95,6 +154,7 @@ public actor RolloutScanner {
                 }
                 return ActiveThread(
                     id: root.id,
+                    title: currentThreadNames[root.id] ?? root.title,
                     cwd: root.cwd,
                     startedAt: activeStartedAt ?? root.updatedAt,
                     updatedAt: root.updatedAt,
@@ -118,8 +178,12 @@ public actor RolloutScanner {
                 if let weeklyLimit = record.weeklyLimit {
                     weeklyLimits.append(weeklyLimit)
                 }
+                if let shortTermLimit = record.shortTermLimit {
+                    shortTermLimits.append(shortTermLimit)
+                }
                 let isUnread = !record.isActive && unreadThreadIDs.contains(record.thread.id)
-                guard record.isActive || isUnread else {
+                let isActive = isRecentlyActive(record)
+                guard isActive || isUnread else {
                     continue
                 }
                 let visibleThread = ActiveThread(
@@ -128,7 +192,7 @@ public actor RolloutScanner {
                     startedAt: record.thread.startedAt,
                     updatedAt: record.thread.updatedAt,
                     projectRecencyAt: record.thread.projectRecencyAt,
-                    isActive: record.isActive,
+                    isActive: isActive,
                     isUnread: isUnread
                 )
                 let existing = visibleThreadsByID[record.thread.id]
@@ -152,11 +216,43 @@ public actor RolloutScanner {
         let latestWeeklyLimit = weeklyLimits.max {
             $0.recordedAt < $1.recordedAt
         }
+        let latestShortTermLimit = shortTermLimits.max {
+            $0.recordedAt < $1.recordedAt
+        }
         return RolloutSnapshot(
             threads: sortedThreads,
+            shortTermLimit: latestShortTermLimit,
             weeklyLimit: latestWeeklyLimit,
             selectedProjectRoots: globalState.selectedProjectRoots
         )
+    }
+
+    private func sessionIndexThreadNames(fileManager: FileManager) -> [String: String] {
+        guard let sessionIndexFile,
+              let data = fileManager.contents(atPath: sessionIndexFile.path),
+              let contents = String(data: data, encoding: .utf8) else {
+            return [:]
+        }
+
+        var names: [String: String] = [:]
+        for line in contents.split(separator: "\n") {
+            guard let lineData = String(line).data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: lineData),
+                  let entry = object as? [String: Any],
+                  let id = entry["id"] as? String,
+                  let rawName = entry["thread_name"] as? String else {
+                continue
+            }
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty {
+                names[id] = name
+            }
+        }
+        return names
+    }
+
+    private func isRecentlyActive(_ record: RolloutRecord) -> Bool {
+        record.isActive && Date().timeIntervalSince(record.thread.updatedAt) <= activeStaleInterval
     }
 
     private func globalStateValues(fileManager: FileManager) -> GlobalStateValues {
@@ -290,6 +386,7 @@ public actor RolloutScanner {
                 isActive: isActive
             ),
             isActive: isActive,
+            shortTermLimit: update.latestShortTermLimit ?? record.shortTermLimit,
             weeklyLimit: update.latestWeeklyLimit ?? record.weeklyLimit
         )
     }
@@ -314,6 +411,7 @@ public actor RolloutScanner {
         return RolloutRecord(
             thread: thread,
             isActive: activeStartedAt != nil,
+            shortTermLimit: latestEvents.shortTermLimit,
             weeklyLimit: latestEvents.weeklyLimit
         )
     }
@@ -364,11 +462,13 @@ public actor RolloutScanner {
         ),
         recent_roots(
           root_id,
+          root_title,
           root_cwd,
           root_updated,
           root_project_recency_ms
         ) AS (
           SELECT root.id,
+                 root.title,
                  root.cwd,
                  root.updated_at,
                  (
@@ -389,6 +489,7 @@ public actor RolloutScanner {
         ),
         thread_tree(
           root_id,
+          root_title,
           root_cwd,
           root_updated,
           root_project_recency_ms,
@@ -397,6 +498,7 @@ public actor RolloutScanner {
           member_updated
         ) AS (
           SELECT root.root_id,
+                 root.root_title,
                  root.root_cwd,
                  root.root_updated,
                  root.root_project_recency_ms,
@@ -406,7 +508,7 @@ public actor RolloutScanner {
           FROM recent_roots AS root
           JOIN threads AS thread ON thread.id = root.root_id
           UNION ALL
-          SELECT tree.root_id, tree.root_cwd, tree.root_updated,
+          SELECT tree.root_id, tree.root_title, tree.root_cwd, tree.root_updated,
                  tree.root_project_recency_ms,
                  child.id, child.rollout_path, child.updated_at
           FROM thread_tree AS tree
@@ -415,6 +517,7 @@ public actor RolloutScanner {
           WHERE child.archived = 0
         )
         SELECT tree.root_id,
+               tree.root_title,
                tree.root_cwd,
                tree.rollout_path,
                tree.root_updated,
@@ -436,8 +539,9 @@ public actor RolloutScanner {
         var rootOrder: [String] = []
         while sqlite3_step(statement) == SQLITE_ROW {
             guard let idPointer = sqlite3_column_text(statement, 0),
-                  let cwdPointer = sqlite3_column_text(statement, 1),
-                  let pathPointer = sqlite3_column_text(statement, 2) else {
+                  let titlePointer = sqlite3_column_text(statement, 1),
+                  let cwdPointer = sqlite3_column_text(statement, 2),
+                  let pathPointer = sqlite3_column_text(statement, 3) else {
                 continue
             }
             let id = String(cString: idPointer)
@@ -446,10 +550,11 @@ public actor RolloutScanner {
                 rootOrder.append(id)
                 rootsByID[id] = IndexedThreadRoot(
                     id: id,
+                    title: String(cString: titlePointer),
                     cwd: URL(fileURLWithPath: String(cString: cwdPointer), isDirectory: true),
-                    updatedAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 3))),
+                    updatedAt: Date(timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 4))),
                     projectRecencyAt: Date(
-                        timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 4)) / 1_000
+                        timeIntervalSince1970: TimeInterval(sqlite3_column_int64(statement, 5)) / 1_000
                     ),
                     rolloutURLs: [rolloutURL]
                 )
@@ -463,7 +568,7 @@ public actor RolloutScanner {
     private func latestRolloutEvents(at url: URL) -> LatestRolloutEvents {
         guard let handle = try? FileHandle(forReadingFrom: url),
               let fileSize = try? handle.seekToEnd() else {
-            return LatestRolloutEvents(task: nil, weeklyLimit: nil)
+            return LatestRolloutEvents(task: nil, shortTermLimit: nil, weeklyLimit: nil)
         }
         defer { try? handle.close() }
 
@@ -472,6 +577,7 @@ public actor RolloutScanner {
         var position = fileSize
         var leadingFragment = Data()
         var latestTask: RolloutTaskEvent?
+        var latestShortTermLimit: WeeklyLimitUsage?
         var latestWeeklyLimit: WeeklyLimitUsage?
 
         while position > 0 {
@@ -482,6 +588,7 @@ public actor RolloutScanner {
                 guard let chunk = try handle.read(upToCount: readCount) else {
                     return LatestRolloutEvents(
                         task: latestTask,
+                        shortTermLimit: latestShortTermLimit,
                         weeklyLimit: latestWeeklyLimit
                     )
                 }
@@ -499,10 +606,12 @@ public actor RolloutScanner {
                 for line in lines.reversed() {
                     let events = RolloutTailReader.lineEvents(in: Data(line))
                     latestTask = latestTask ?? events.task
+                    latestShortTermLimit = latestShortTermLimit ?? events.shortTermLimit
                     latestWeeklyLimit = latestWeeklyLimit ?? events.weeklyLimit
-                    if latestTask != nil, latestWeeklyLimit != nil {
+                    if latestTask != nil, latestShortTermLimit != nil, latestWeeklyLimit != nil {
                         return LatestRolloutEvents(
                             task: latestTask,
+                            shortTermLimit: latestShortTermLimit,
                             weeklyLimit: latestWeeklyLimit
                         )
                     }
@@ -510,6 +619,7 @@ public actor RolloutScanner {
             } catch {
                 return LatestRolloutEvents(
                     task: latestTask,
+                    shortTermLimit: latestShortTermLimit,
                     weeklyLimit: latestWeeklyLimit
                 )
             }
@@ -518,9 +628,14 @@ public actor RolloutScanner {
         if !leadingFragment.isEmpty {
             let events = RolloutTailReader.lineEvents(in: leadingFragment)
             latestTask = latestTask ?? events.task
+            latestShortTermLimit = latestShortTermLimit ?? events.shortTermLimit
             latestWeeklyLimit = latestWeeklyLimit ?? events.weeklyLimit
         }
-        return LatestRolloutEvents(task: latestTask, weeklyLimit: latestWeeklyLimit)
+        return LatestRolloutEvents(
+            task: latestTask,
+            shortTermLimit: latestShortTermLimit,
+            weeklyLimit: latestWeeklyLimit
+        )
     }
 
     private func readSessionMetadata(at url: URL) -> (id: String, cwd: URL, isSubagent: Bool)? {

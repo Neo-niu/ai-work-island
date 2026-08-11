@@ -2,7 +2,7 @@ import Foundation
 
 public struct ProjectGrouper: Sendable {
     public static let unnamedProjectID = "__unnamed_project__"
-    public static let tasksGroupName = "Görevler"
+    public static let tasksGroupName = "任务"
 
     private let scratchRoot: URL
     private let homeDirectory: URL

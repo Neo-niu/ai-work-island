@@ -1,102 +1,93 @@
-# Codex Touch Bar
+# Codex Hermes 工作状态中枢
 
-A standalone macOS menu bar helper that shows projects with active Codex tasks or unread results on a MacBook Pro Touch Bar. It does not require BetterTouchTool and does not modify or re-sign the Codex app.
+用同一个 macOS 常驻应用，在桌面和 Touch Bar 查看 Codex 与本地自动化程序状态。
 
-When Codex is the frontmost app, the Touch Bar shows a horizontally scrollable project strip:
+## 当前能力
 
-```text
-[folder] aviaSurveil360 · 2   [folder] flutter_desktop_up…   [folder] Görevler
-```
+- Codex：只显示处理中和待读结果；两者均为零时显示“Codex 空闲”。点击“处理中”或“待读”会将 Codex 切到前台，通过主窗口内搜索循环打开对应状态的会话。
+- 桌面面板：默认无标题栏控件并停留在普通窗口后方，跨桌面空间显示 Codex、自动化任务及 Codex/公司剩余额度；优先展示等待确认、异常和失联任务，点击可打开 Codex 会话或自动化产出。菜单可切换为始终置顶浮窗。
+- macOS 原生小组件：提供中号和大号两种尺寸，显示 Codex 与自动化的当前步骤、运行时长、待处理数量和最新产出；从系统小组件图库搜索“AI 工作状态”添加，点击可回到状态面板。
+- 语音备忘录入口：点击小组件或桌面面板的“录音”，打开苹果“语音备忘录”并以 `Command-N` 立即开始；完成或关闭后，由既有自动会议纪要服务发现并转写。当前服务仅处理 30 秒以上录音。
+- 全局录音快捷键：在任何应用中按 `Option-Command-R`，直接调用同一录音入口；使用系统全局快捷键注册，不监听或保存其他按键。
+- 自适应刷新：状态面板可见时每 1 秒、后台有运行任务时每 3 秒、后台空闲时每 30 秒采集；仅在状态、步骤或产出变化时刷新小组件。运行中刷新周期为 5 分钟、待处理为 10 分钟、空闲为 30 分钟。
+- 刷新保真：小组件显示最后更新时间；运行快照超过 2 分钟显示“数据延迟”、超过 10 分钟显示“状态未更新”，不再将旧数据误报为空闲。右上角 `↻` 可手动请求刷新。
+- 桌面刷新：轮询时间或任务内部更新时间变化不会重建任务列表；只有标题、状态、阶段、分组等可见内容变化才更新界面，额度独立原位刷新。
+- 等待处理：`等待你` 分组固定置顶并始终展开，不提供折叠入口；组内任务逐项显示，优先占用面板的 7 个可见位置。
+- 桌面面板界面：使用中性自适应玻璃背景和低对比卡片，减少桌面强调色污染；任务标题自动清理附件名、Markdown 标题和换行，固定为标题/步骤两行，避免内容溢出或撑宽窗口。
+- 自动化接入：只读本地 JSON 状态文件；运行任务超过自定义失效时间未更新时显示“失联”。
+- 图标：使用深色圆角设备、Touch Bar 光带与状态脉冲组成的 macOS 风格图标，不使用 Apple 商标。
+- 额度：Codex 额度胶囊同时展示数据源当前提供的 5 小时与周剩余比例；公司额度显示剩余美元金额并用圆环表示剩余比例。50% 以下转橙，20% 以下转红。
+- 公司模型平台：后台刷新 Edge 已登录额度标签页后读取本月额度，不切换当前浏览标签；失败时保留上次成功结果。
+- 布局优先级：任务状态在前，Codex 与公司额度圆环在后。
+- 触控栏仅展示任务状态、Codex 额度和公司额度，不提供推理程度控制。
+- 视觉遵循当前 macOS 原生方向：系统 HUD 材质、连续圆角、动态系统色和克制的层级；正常状态使用系统强调色，仅低额度和待读提醒使用警示色。
+- Codex 状态：30 分钟无日志活动且缺少结束事件的异常会话不计入处理中。
+- 默认仅在 Codex 位于前台时展开，也可在菜单中开启“始终显示（所有应用）”。
+- 所有状态均只读本机文件，不读取提示词正文，不需要 Token。
 
-Tapping a project opens unread results first, then cycles through that project's active tasks and wraps back to the first one.
-Projects with an unread Codex result are highlighted in purple with a dot.
-The project selected in the active Codex window is highlighted in yellow with a leading arrow.
+## 安装与运行
 
-The right side shows the remaining weekly Codex allowance and provides native Touch Bar popovers for the currently visible task:
-
-- **Weekly limit:** the latest remaining percentage reported by Codex
-- **Effort:** Low, Medium, High, Extra High, or Ultra
-- **Speed:** Standard or Fast
-
-## Requirements
-
-- A MacBook Pro with a physical Touch Bar
-- macOS 13 or later
-- The Codex desktop app installed at `/Applications/ChatGPT.app`
-
-This proof of concept has been verified on a MacBook Pro M2 running macOS 26.5.2 and Codex `26.715.52143`.
-
-## Install
-
-1. Download the notarized macOS ZIP from [GitHub Releases](https://github.com/MarlonJD/codex_touchbar/releases).
-2. Extract `Codex Touch Bar.app` and move it to `/Applications`.
-3. Open the app once.
-
-The app registers itself as a macOS login item on first launch so it starts automatically after future sign-ins. It runs as a menu bar helper and only presents its Touch Bar controls while Codex is frontmost.
-
-## Build and run
+需要 macOS 13+、带实体 Touch Bar 的 MacBook Pro，以及 Xcode Command Line Tools。
 
 ```bash
-git clone https://github.com/MarlonJD/codex_touchbar.git
-cd codex_touchbar
 ./script/build_and_run.sh --verify
 ```
 
-Building from source requires Xcode or the Xcode Command Line Tools with Swift 6. The script builds and signs `dist/Codex Touch Bar.app`, then launches it as a menu bar app. It uses the configured Developer ID identity when available and otherwise falls back to an ad-hoc development signature. Use the menu bar icon to disable presentation, refresh task discovery, open Codex, or quit.
+生成的应用：
 
-The first effort or speed change asks for macOS Accessibility access. Enable **Codex Touch Bar** under **System Settings → Privacy & Security → Accessibility**, return to Codex, and tap the option again. This permission is needed because Codex does not expose a public API for changing these controls in an already-open task.
-
-Optional run modes:
-
-```bash
-./script/build_and_run.sh --debug
-./script/build_and_run.sh --logs
-./script/build_and_run.sh --telemetry
+```text
+dist/Codex Hermes Touch Bar.app
 ```
 
-Create a notarized release archive with:
+验证运行时会同时安装到 `/Applications/Codex Hermes Touch Bar.app`。源码仍保存在 iCloud，应用从本机“应用程序”目录运行，避免 iCloud 修改签名元数据。
+
+诊断数据源：
 
 ```bash
-./script/build_release.sh 0.2.4
+dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose
+dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose-hermes
+dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose-company-quota
+dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose-automation
+dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose-widget
 ```
 
-The release script requires the Developer ID identity and `desktop-updater-notary` Keychain profile. It signs with hardened runtime, submits the archive to Apple, staples the ticket, validates it with Gatekeeper, and writes the final ZIP under `dist/release`.
+## 数据来源
 
-## How it works
+- Codex：`~/.codex/state_5.sqlite`、近期 rollout JSONL、未读线程状态。
+- 公司模型平台：Edge 中 `model.zhenguanyu.com` 的现有登录态；不读取或保存 Cookie。
+- 自动化程序：`~/Library/Application Support/Codex Hermes Touch Bar/automation-status/*.json`。
 
-- Reads Codex's local `~/.codex/state_5.sqlite` thread index in read-only mode.
-- Checks only task lifecycle fields and weekly rate-limit metadata in recent rollout JSONL files. Prompt and response text is not used.
-- Reads Codex's local unread-thread IDs to highlight active projects that need attention.
-- Treats a task as active when its latest lifecycle event is `task_started`, unless followed by `task_complete` or `turn_aborted`.
-- Groups tasks by their nearest Git repository; Codex scratch directories appear as `Görevler`.
-- Opens tasks through the native `codex://threads/<id>` deep link.
-- Uses an `NSScrubber` for native horizontal Touch Bar scrolling.
-- Changes effort and speed by operating only the matching accessibility controls in the frontmost Codex window. It fails closed when it cannot identify a control or option.
+Hermes 本地状态不再参与常驻刷新；`--diagnose-hermes` 仅保留为手动诊断命令。
 
-Run the local data-path diagnostic without launching the UI:
+## 自动化状态协议
+
+每个任务写一个 JSON 文件，写入时建议先生成临时文件再原子替换。示例见 `examples/automation-status.example.json`。
+
+```json
+{
+  "id": "daily-data-merge",
+  "source": "数据自动化",
+  "title": "下载并合并日报",
+  "detail": "正在合并 Tableau 导出文件",
+  "status": "running",
+  "updatedAt": "2026-08-10T10:30:00Z",
+  "staleAfterSeconds": 1800,
+  "outputPath": "/Users/your-name/Documents/output.xlsx"
+}
+```
+
+`status` 支持 `running`、`waiting`、`failed`、`completed`、`idle`、`stale`。`updatedAt` 可省略，此时使用文件修改时间；`staleAfterSeconds` 设为 `0` 可关闭运行状态失效判断。也可使用 `openURL` 作为点击跳转目标。
+
+## 已知限制
+
+- Touch Bar 常驻能力依赖 macOS 私有 API，未来系统版本可能改变。
+- 公司额度读取要求 Edge 已登录且至少保留一个公司模型平台标签页；否则显示“公司 —”。
+- 本地构建采用 ad-hoc 签名；重建后 macOS 可能重新要求辅助功能授权。
+
+## 验证
 
 ```bash
-swift run CodexTouchBar --diagnose
+swift test --disable-sandbox --scratch-path /tmp/codex-hermes-touch-bar-tests
 ```
 
-## Compatibility warning
-
-Apple's public AppKit API only lets the frontmost application provide its own Touch Bar. A separate helper therefore has to invoke the private system-modal Touch Bar selectors at runtime. This makes the app unsuitable for the Mac App Store, and a future macOS update may rename or remove those selectors.
-
-The private bridge is capability-checked at startup and fails closed: if the selectors are unavailable, the menu bar app remains usable and reports that the Touch Bar API is unavailable.
-
-## Development
-
-```bash
-swift test --disable-sandbox
-```
-
-The package contains:
-
-- `CodexTouchBarCore`: local task discovery, grouping, truncation, and cycling
-- `PrivateTouchBar`: a small Objective-C runtime bridge with no compile-time private-framework link
-- `CodexTouchBar`: the AppKit menu bar and Touch Bar UI
-
-## License
-
-MIT
+项目源自 MIT 项目 [MarlonJD/codex_touchbar](https://github.com/MarlonJD/codex_touchbar)，并保留原许可证。

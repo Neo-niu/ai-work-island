@@ -1,5 +1,6 @@
 import AppKit
 @testable import CodexTouchBar
+import CodexTouchBarCore
 import Testing
 
 @MainActor
@@ -104,14 +105,115 @@ import Testing
     #expect(unread.size.height == plain.size.height)
 }
 
-@Test func effortChoicesMatchCodexWhileUltraTargetsTheHiddenMaxStep() {
+@MainActor
+@Test func dashboardQuotaRingsUseCompactTouchBarSizing() {
+    let quota = QuotaRingView()
+    quota.update(title: "周", remainingPercent: 58)
+    quota.layoutSubtreeIfNeeded()
+    #expect(quota.fittingSize.width == 112)
+    #expect(quota.fittingSize.height == 30)
+    #expect(quota.accessibilityLabel() == "周额度剩余 58%")
+
+    quota.update(
+        title: "Codex",
+        remainingPercent: 58,
+        detail: "5时 71% · 周 58%",
+        accessibilityText: "5小时额度剩余 71%，周额度剩余 58%"
+    )
+    #expect(quota.accessibilityLabel() == "5小时额度剩余 71%，周额度剩余 58%")
+
+    quota.update(title: "公司", remainingPercent: nil)
+    #expect(quota.accessibilityLabel() == "公司额度不可用")
+
+}
+
+@Test func desktopPanelWidthDoesNotDependOnTaskCount() {
+    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 0).width == 372)
+    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 1).width == 372)
+    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7).width == 372)
+    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7).height == 588)
+    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7, sectionCount: 4).height == 620)
+}
+
+@Test func desktopPanelIgnoresRefreshOnlyChangesButDetectsVisibleContentChanges() {
+    let firstItem = WorkItem(
+        id: "codex:1",
+        source: "Codex",
+        title: "分析任务",
+        detail: "正在处理",
+        status: .running,
+        updatedAt: Date(timeIntervalSince1970: 100)
+    )
+    let refreshedItem = WorkItem(
+        id: "codex:1",
+        source: "Codex",
+        title: "分析任务",
+        detail: "正在处理",
+        status: .running,
+        updatedAt: Date(timeIntervalSince1970: 200)
+    )
+    let changedItem = WorkItem(
+        id: "codex:1",
+        source: "Codex",
+        title: "分析任务",
+        detail: "等待查看",
+        status: .waiting,
+        updatedAt: Date(timeIntervalSince1970: 200)
+    )
+    let tokens = ["section:active:true", "codex:1"]
+
+    let first = DesktopPanelContentSignature(
+        snapshot: WorkStatusSnapshot(items: [firstItem], automationIssues: []),
+        layoutTokens: tokens
+    )
+    let refreshOnly = DesktopPanelContentSignature(
+        snapshot: WorkStatusSnapshot(items: [refreshedItem], automationIssues: []),
+        layoutTokens: tokens
+    )
+    let changed = DesktopPanelContentSignature(
+        snapshot: WorkStatusSnapshot(items: [changedItem], automationIssues: []),
+        layoutTokens: ["section:needsUser:true", "codex:1"]
+    )
+
+    #expect(first == refreshOnly)
+    #expect(first != changed)
+}
+
+@MainActor
+@Test func taskStatusUsesTheReservedDashboardWidthAndHidesZeroStates() {
+    let status = TaskStatusView()
+    status.update(processing: 3, unread: 0)
+    status.layoutSubtreeIfNeeded()
+    #expect(status.fittingSize.width == 156)
+    #expect(status.fittingSize.height == 30)
+    #expect(status.accessibilityLabel() == "处理中 3")
+
+    status.update(processing: 0, unread: 1)
+    #expect(status.accessibilityLabel() == "待读 1")
+}
+
+@Test func effortChoicesMatchAllCodexReasoningSteps() {
     #expect(EffortChoice.allCases.map(\.rawValue) == [
         "low",
         "medium",
         "high",
         "xhigh",
+        "max",
         "ultra",
     ])
     #expect(EffortChoice.commandOptionCount == 6)
     #expect(EffortChoice.ultra.commandTargetIndex == 5)
+    #expect(EffortChoice.allCases.map(\.shortTitle) == ["低", "中", "高", "极高", "Max", "Ultra"])
+    #expect(EffortChoice.low.accessibilityLabels.contains("轻度"))
+    #expect(EffortChoice.medium.accessibilityLabels.contains("中度"))
+    #expect(EffortChoice.high.accessibilityLabels.contains("高度"))
+    #expect(EffortChoice.xhigh.accessibilityLabels.contains("极高"))
+}
+
+@Test func waitingForUserSectionIsAlwaysExpandedAndShownFirst() {
+    #expect(WorkSection.allCases.first == .needsUser)
+    #expect(WorkSection.needsUser.isAlwaysExpanded)
+    #expect(!WorkSection.active.isAlwaysExpanded)
+    #expect(!WorkSection.queued.isAlwaysExpanded)
+    #expect(!WorkSection.recent.isAlwaysExpanded)
 }

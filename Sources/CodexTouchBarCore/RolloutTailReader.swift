@@ -7,6 +7,7 @@ struct RolloutTaskEvent: Equatable, Sendable {
 
 struct RolloutTailUpdate: Equatable, Sendable {
     let latestEvent: RolloutTaskEvent?
+    let latestShortTermLimit: WeeklyLimitUsage?
     let latestWeeklyLimit: WeeklyLimitUsage?
     let processedOffset: UInt64
     let bytesRead: Int
@@ -22,6 +23,7 @@ enum RolloutTailReader {
         guard let lastNewline = data.lastIndex(of: UInt8(ascii: "\n")) else {
             return RolloutTailUpdate(
                 latestEvent: nil,
+                latestShortTermLimit: nil,
                 latestWeeklyLimit: nil,
                 processedOffset: offset,
                 bytesRead: data.count
@@ -30,15 +32,18 @@ enum RolloutTailReader {
 
         let completedData = data.prefix(through: lastNewline)
         var latestEvent: RolloutTaskEvent?
+        var latestShortTermLimit: WeeklyLimitUsage?
         var latestWeeklyLimit: WeeklyLimitUsage?
         for line in completedData.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true) {
             let events = lineEvents(in: Data(line))
             latestEvent = events.task ?? latestEvent
+            latestShortTermLimit = events.shortTermLimit ?? latestShortTermLimit
             latestWeeklyLimit = events.weeklyLimit ?? latestWeeklyLimit
         }
 
         return RolloutTailUpdate(
             latestEvent: latestEvent,
+            latestShortTermLimit: latestShortTermLimit,
             latestWeeklyLimit: latestWeeklyLimit,
             processedOffset: offset + UInt64(completedData.count),
             bytesRead: data.count
@@ -77,12 +82,12 @@ enum RolloutTailReader {
 
     static func lineEvents(
         in lineData: Data
-    ) -> (task: RolloutTaskEvent?, weeklyLimit: WeeklyLimitUsage?) {
+    ) -> (task: RolloutTaskEvent?, shortTermLimit: WeeklyLimitUsage?, weeklyLimit: WeeklyLimitUsage?) {
         guard let object = try? JSONSerialization.jsonObject(with: lineData),
               let envelope = object as? [String: Any],
               envelope["type"] as? String == "event_msg",
               let payload = envelope["payload"] as? [String: Any] else {
-            return (nil, nil)
+            return (nil, nil, nil)
         }
 
         let timestamp = parseTimestamp(envelope["timestamp"])
@@ -97,28 +102,29 @@ enum RolloutTailReader {
         guard payload["type"] as? String == "token_count",
               let rateLimits = payload["rate_limits"] as? [String: Any],
               let recordedAt = timestamp else {
-            return (task, nil)
+            return (task, nil, nil)
         }
 
-        let weeklyWindow = ["primary", "secondary"]
+        let windows = ["primary", "secondary"]
             .compactMap { rateLimits[$0] as? [String: Any] }
-            .first { window in
-                (window["window_minutes"] as? NSNumber)?.intValue == 7 * 24 * 60
+        func usage(windowMinutes: Int) -> WeeklyLimitUsage? {
+            guard let window = windows.first(where: {
+                ($0["window_minutes"] as? NSNumber)?.intValue == windowMinutes
+            }), let usedPercent = (window["used_percent"] as? NSNumber)?.doubleValue else {
+                return nil
             }
-        guard let weeklyWindow,
-              let usedPercent = (weeklyWindow["used_percent"] as? NSNumber)?.doubleValue else {
-            return (task, nil)
-        }
-
-        let resetsAt = (weeklyWindow["resets_at"] as? NSNumber)
-            .map { Date(timeIntervalSince1970: $0.doubleValue) }
-        return (
-            task,
-            WeeklyLimitUsage(
+            let resetsAt = (window["resets_at"] as? NSNumber)
+                .map { Date(timeIntervalSince1970: $0.doubleValue) }
+            return WeeklyLimitUsage(
                 usedPercent: usedPercent,
                 resetsAt: resetsAt,
                 recordedAt: recordedAt
             )
+        }
+        return (
+            task,
+            usage(windowMinutes: 5 * 60),
+            usage(windowMinutes: 7 * 24 * 60)
         )
     }
 
