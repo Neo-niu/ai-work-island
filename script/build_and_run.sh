@@ -92,9 +92,9 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundleIconFile</key>
   <string>AppIcon</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.5.7</string>
+  <string>0.5.15</string>
   <key>CFBundleVersion</key>
-  <string>39</string>
+  <string>47</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
   <key>LSUIElement</key>
@@ -136,11 +136,11 @@ cat >"$WIDGET_INFO_PLIST" <<PLIST
   <key>CFBundlePackageType</key>
   <string>XPC!</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.5.7</string>
+  <string>0.5.15</string>
   <key>CFBundleSupportedPlatforms</key>
   <array><string>MacOSX</string></array>
   <key>CFBundleVersion</key>
-  <string>39</string>
+  <string>47</string>
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>NSExtension</key>

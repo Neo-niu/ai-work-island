@@ -135,6 +135,112 @@ import Testing
     #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7, sectionCount: 4).height == 620)
 }
 
+@Test func floatingStatusButtonUsesACompactPillHitTarget() {
+    #expect(DesktopFloatingButtonLayout.size == NSSize(width: 108, height: 38))
+    #expect(DesktopFloatingButtonLayout.canvasSize == NSSize(width: 120, height: 50))
+    #expect(DesktopFloatingButtonLayout.animationInset == 6)
+    #expect(DesktopFloatingButtonLayout.cornerRadius == 19)
+    #expect(DesktopFloatingButtonLayout.statusDotSize == 8)
+}
+
+@Test func floatingStatusButtonPrioritizesLiveStatus() {
+    let completed = WorkItem(
+        id: "done",
+        source: "自动化",
+        title: "日报完成",
+        status: .completed,
+        updatedAt: Date(),
+        outputPath: "/tmp/output"
+    )
+    let running = WorkItem(
+        id: "running",
+        source: "Codex",
+        title: "分析中",
+        status: .running,
+        updatedAt: Date()
+    )
+    let waiting = WorkItem(
+        id: "waiting",
+        source: "Codex",
+        title: "等待确认",
+        status: .waiting,
+        updatedAt: Date()
+    )
+
+    let activePresentation = DesktopFloatingButtonPresentation.make(
+        items: [running, completed],
+        latestCompleted: completed
+    )
+    let waitingPresentation = DesktopFloatingButtonPresentation.make(
+        items: [waiting, running, completed],
+        latestCompleted: completed
+    )
+    let completedPresentation = DesktopFloatingButtonPresentation.make(
+        items: [completed],
+        latestCompleted: completed
+    )
+    let idlePresentation = DesktopFloatingButtonPresentation.make(items: [], latestCompleted: nil)
+
+    #expect(activePresentation.displayText == "1 运行")
+    #expect(activePresentation.tintColor == .systemBlue)
+    #expect(activePresentation.pulses)
+    #expect(waitingPresentation.displayText == "1 等待你")
+    #expect(waitingPresentation.tintColor == .systemOrange)
+    #expect(!waitingPresentation.pulses)
+    #expect(completedPresentation.displayText == "已完成")
+    #expect(completedPresentation.tintColor == .systemGreen)
+    #expect(idlePresentation.displayText == "空闲")
+    #expect(idlePresentation.tintColor == .secondaryLabelColor)
+    #expect(activePresentation.accessibilityLabel == "恢复 AI 工作状态；当前1 运行")
+}
+
+@Test func floatingStatusButtonMotionHonorsReduceMotionAndMeaningfulChanges() {
+    let idle = DesktopFloatingButtonPresentation.make(items: [], latestCompleted: nil)
+    let runningItem = WorkItem(
+        id: "running",
+        source: "Codex",
+        title: "分析中",
+        status: .running,
+        updatedAt: Date()
+    )
+    let running = DesktopFloatingButtonPresentation.make(items: [runningItem], latestCompleted: nil)
+
+    #expect(!DesktopFloatingButtonMotion.shouldAnimateTransition(from: nil, to: idle, reduceMotion: false))
+    #expect(!DesktopFloatingButtonMotion.shouldAnimateTransition(from: idle, to: idle, reduceMotion: false))
+    #expect(!DesktopFloatingButtonMotion.shouldAnimateTransition(from: idle, to: running, reduceMotion: true))
+    #expect(DesktopFloatingButtonMotion.shouldAnimateTransition(from: idle, to: running, reduceMotion: false))
+    #expect(DesktopFloatingButtonMotion.entranceDuration >= 0.35)
+    #expect(DesktopFloatingButtonMotion.transitionDuration >= 0.55)
+    #expect(DesktopFloatingButtonMotion.ambientCycleDuration > DesktopFloatingButtonMotion.transitionDuration)
+    #expect(DesktopFloatingButtonMotion.borderCycleDuration > 1)
+}
+
+@MainActor
+@Test func floatingStatusButtonInstallsLayeredRunningAndTransitionAnimations() {
+    let view = FloatingStatusButtonView(frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.size))
+    view.layoutSubtreeIfNeeded()
+    let runningItem = WorkItem(
+        id: "running",
+        source: "Codex",
+        title: "丰富动画",
+        status: .running,
+        updatedAt: Date()
+    )
+
+    view.update(snapshot: WorkStatusSnapshot(items: [runningItem], automationIssues: []))
+    let motion = view.motionSnapshot()
+
+    #expect(motion.root.contains("statusBounce"))
+    #expect(motion.root.contains("statusBorderFlash"))
+    #expect(motion.statusDot.contains("statusPulse"))
+    #expect(motion.statusDot.contains("statusDotPop"))
+    #expect(motion.ripple.contains("runningRipple"))
+    #expect(motion.ripple.contains("statusBurst"))
+    #expect(motion.ambient.contains("ambientDrift"))
+    #expect(motion.border.contains("borderOrbit"))
+    #expect(motion.sheen.contains("statusSheen"))
+}
+
 @Test func desktopPanelIgnoresRefreshOnlyChangesButDetectsVisibleContentChanges() {
     let firstItem = WorkItem(
         id: "codex:1",

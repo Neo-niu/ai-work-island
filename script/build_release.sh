@@ -11,7 +11,7 @@ DEFAULT_SIGN_IDENTITY="Developer ID Application: Burak Karahan (UPK4SC93AN)"
 DEFAULT_NOTARY_PROFILE="desktop-updater-notary"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-0.5.7}"
+VERSION="${1:-0.5.15}"
 VERSION="${VERSION#v}"
 SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-$DEFAULT_SIGN_IDENTITY}"
 NOTARY_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-$DEFAULT_NOTARY_PROFILE}"
@@ -72,7 +72,7 @@ cat >"$WIDGET_INFO_PLIST" <<PLIST
   <key>CFBundlePackageType</key><string>XPC!</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
-  <key>CFBundleVersion</key><string>39</string>
+  <key>CFBundleVersion</key><string>47</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSExtension</key>
   <dict><key>NSExtensionPointIdentifier</key><string>com.apple.widgetkit-extension</string></dict>

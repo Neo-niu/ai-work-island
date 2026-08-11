@@ -16,6 +16,88 @@ enum DesktopPanelLayout {
     }
 }
 
+enum DesktopFloatingButtonLayout {
+    static let size = NSSize(width: 108, height: 38)
+    static let animationInset: CGFloat = 6
+    static let canvasSize = NSSize(
+        width: size.width + animationInset * 2,
+        height: size.height + animationInset * 2
+    )
+    static let cornerRadius: CGFloat = size.height / 2
+    static let statusDotSize: CGFloat = 8
+}
+
+struct DesktopFloatingButtonPresentation: Equatable {
+    let displayText: String
+    let tintColor: NSColor
+    let pulses: Bool
+    let accessibilityLabel: String
+
+    static func make(items: [WorkItem], latestCompleted: WorkItem?) -> Self {
+        let waitingCount = items.filter { $0.status == .waiting }.count
+        let issueCount = items.filter { $0.status == .failed || $0.status == .stale }.count
+        let activeCount = items.filter { $0.status.isActiveWork }.count
+
+        let displayText: String
+        let tintColor: NSColor
+        let pulses: Bool
+        if issueCount > 0 {
+            displayText = "\(issueCount) 需处理"
+            tintColor = .systemRed
+            pulses = false
+        } else if waitingCount > 0 {
+            displayText = "\(waitingCount) 等待你"
+            tintColor = .systemOrange
+            pulses = false
+        } else if activeCount > 0 {
+            displayText = "\(activeCount) 运行"
+            tintColor = .systemBlue
+            pulses = true
+        } else if latestCompleted != nil {
+            displayText = "已完成"
+            tintColor = .systemGreen
+            pulses = false
+        } else {
+            displayText = "空闲"
+            tintColor = .secondaryLabelColor
+            pulses = false
+        }
+
+        let accessibilityLabel = "恢复 AI 工作状态；当前\(displayText)"
+        return Self(
+            displayText: displayText,
+            tintColor: tintColor,
+            pulses: pulses,
+            accessibilityLabel: accessibilityLabel
+        )
+    }
+}
+
+enum DesktopFloatingButtonMotion {
+    static let entranceDuration: TimeInterval = 0.42
+    static let transitionDuration: TimeInterval = 0.62
+    static let ambientCycleDuration: TimeInterval = 2.4
+    static let borderCycleDuration: TimeInterval = 1.8
+
+    static func shouldAnimateTransition(
+        from previous: DesktopFloatingButtonPresentation?,
+        to current: DesktopFloatingButtonPresentation,
+        reduceMotion: Bool
+    ) -> Bool {
+        guard !reduceMotion, let previous else { return false }
+        return previous != current
+    }
+}
+
+struct DesktopFloatingButtonMotionSnapshot: Equatable {
+    let root: Set<String>
+    let statusDot: Set<String>
+    let ripple: Set<String>
+    let ambient: Set<String>
+    let border: Set<String>
+    let sheen: Set<String>
+}
+
 struct DesktopPanelItemPresentation: Equatable {
     let id: String
     let title: String
@@ -96,6 +178,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
     var onVisibilityChanged: ((Bool) -> Void)?
 
     private let panel: NSPanel
+    private let floatingPanel: NSPanel
+    private let floatingButtonView = FloatingStatusButtonView()
     private let titleLabel = NSTextField(labelWithString: "AI 工作状态")
     private let statusCapsule = StatusCapsuleView()
     private let voiceMemoButton = NSButton(title: "录音", target: nil, action: nil)
@@ -113,6 +197,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
     private var didChooseDefaultSection = false
     private var latestSnapshot: WorkStatusSnapshot?
     private var displayedContentSignature: DesktopPanelContentSignature?
+    private var isMinimizedToFloatingButton = false
+    private var didPositionFloatingPanel = false
 
     override init() {
         panel = NSPanel(
@@ -121,11 +207,18 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
+        floatingPanel = NSPanel(
+            contentRect: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.canvasSize),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
         super.init()
         configurePanel()
+        configureFloatingPanel()
     }
 
-    var isVisible: Bool { panel.isVisible }
+    var isVisible: Bool { panel.isVisible || floatingPanel.isVisible }
 
     func setDisplayMode(_ mode: DesktopPanelMode) {
         switch mode {
@@ -151,15 +244,20 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
     }
 
     func show() {
+        isMinimizedToFloatingButton = false
+        floatingPanel.orderOut(nil)
         panel.orderFrontRegardless()
     }
 
     func hide() {
+        isMinimizedToFloatingButton = false
         panel.orderOut(nil)
+        floatingPanel.orderOut(nil)
     }
 
     func update(snapshot: WorkStatusSnapshot) {
         latestSnapshot = snapshot
+        floatingButtonView.update(snapshot: snapshot)
         captureStatusEffects(in: snapshot)
         updateQuotaViews(snapshot: snapshot)
         if isTransitioningItems {
@@ -417,6 +515,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        isMinimizedToFloatingButton = false
+        floatingPanel.orderOut(nil)
         onVisibilityChanged?(false)
     }
 
@@ -458,7 +558,23 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         voiceMemoButton.toolTip = "打开语音备忘录并立即开始；30 秒以上录音结束后自动生成会议纪要"
         voiceMemoButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let header = NSStackView(views: [titleLabel, NSView(), statusCapsule, voiceMemoButton])
+        let minimizeButton = NSButton(
+            image: NSImage(
+                systemSymbolName: "arrow.down.right.and.arrow.up.left",
+                accessibilityDescription: "缩小为悬浮按钮"
+            ) ?? NSImage(),
+            target: self,
+            action: #selector(minimizeToFloatingButton)
+        )
+        minimizeButton.isBordered = false
+        minimizeButton.bezelStyle = .inline
+        minimizeButton.contentTintColor = .secondaryLabelColor
+        minimizeButton.toolTip = "缩小为悬浮按钮"
+        minimizeButton.setAccessibilityLabel("缩小为悬浮按钮")
+        minimizeButton.setContentHuggingPriority(.required, for: .horizontal)
+        minimizeButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let header = NSStackView(views: [titleLabel, NSView(), statusCapsule, voiceMemoButton, minimizeButton])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 8
@@ -501,6 +617,520 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
 
     @objc private func startVoiceMemo() {
         onVoiceMemoSelected?()
+    }
+
+    @objc private func minimizeToFloatingButton() {
+        guard !isMinimizedToFloatingButton else { return }
+        isMinimizedToFloatingButton = true
+        if !didPositionFloatingPanel {
+            let size = DesktopFloatingButtonLayout.canvasSize
+            floatingPanel.setFrameOrigin(NSPoint(
+                x: panel.frame.maxX - size.width,
+                y: panel.frame.maxY - size.height
+            ))
+            didPositionFloatingPanel = true
+        }
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard !reduceMotion else {
+            panel.orderOut(nil)
+            floatingPanel.orderFrontRegardless()
+            return
+        }
+
+        floatingPanel.alphaValue = 0
+        floatingPanel.orderFrontRegardless()
+        floatingButtonView.playEntrance()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.20
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().alphaValue = 0
+            floatingPanel.animator().alphaValue = 1
+        } completionHandler: { [weak self] in
+            guard let self else { return }
+            panel.orderOut(nil)
+            panel.alphaValue = 1
+        }
+    }
+
+    private func configureFloatingPanel() {
+        floatingPanel.isFloatingPanel = true
+        floatingPanel.level = .floating
+        floatingPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        floatingPanel.hidesOnDeactivate = false
+        floatingPanel.isOpaque = false
+        floatingPanel.backgroundColor = .clear
+        floatingPanel.hasShadow = true
+        floatingPanel.animationBehavior = .utilityWindow
+        let canvas = NSView(frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.canvasSize))
+        canvas.wantsLayer = true
+        canvas.layer?.backgroundColor = NSColor.clear.cgColor
+        floatingButtonView.translatesAutoresizingMaskIntoConstraints = false
+        canvas.addSubview(floatingButtonView)
+        NSLayoutConstraint.activate([
+            floatingButtonView.centerXAnchor.constraint(equalTo: canvas.centerXAnchor),
+            floatingButtonView.centerYAnchor.constraint(equalTo: canvas.centerYAnchor),
+            floatingButtonView.widthAnchor.constraint(equalToConstant: DesktopFloatingButtonLayout.size.width),
+            floatingButtonView.heightAnchor.constraint(equalToConstant: DesktopFloatingButtonLayout.size.height),
+        ])
+        floatingPanel.contentView = canvas
+        floatingButtonView.onActivate = { [weak self] in
+            self?.activateFloatingButton()
+        }
+    }
+
+    private func activateFloatingButton() {
+        guard isMinimizedToFloatingButton else { return }
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        guard !reduceMotion else {
+            show()
+            return
+        }
+
+        isMinimizedToFloatingButton = false
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        floatingButtonView.playExit()
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.24
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+            floatingPanel.animator().alphaValue = 0
+        } completionHandler: { [weak self] in
+            guard let self else { return }
+            floatingPanel.orderOut(nil)
+            floatingPanel.alphaValue = 1
+        }
+    }
+}
+
+@MainActor
+final class FloatingStatusButtonView: NSVisualEffectView {
+    var onActivate: (() -> Void)?
+
+    private let statusDot = NSView()
+    private let statusHalo = NSView()
+    private let statusLabel = NSTextField(labelWithString: "空闲")
+    private let ambientLayer = CAGradientLayer()
+    private let borderContainerLayer = CALayer()
+    private let borderGradientLayer = CAGradientLayer()
+    private let borderMaskLayer = CAShapeLayer()
+    private let rippleLayer = CAShapeLayer()
+    private let sheenLayer = CAGradientLayer()
+    private var mouseDownLocation: NSPoint?
+    private var windowOriginAtMouseDown: NSPoint?
+    private var didDrag = false
+    private var trackingAreaReference: NSTrackingArea?
+    private var currentTintColor = NSColor.controlAccentColor
+    private var currentPresentation: DesktopFloatingButtonPresentation?
+    private var isHovering = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        appearance = NSAppearance(named: .darkAqua)
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        alphaValue = 0.92
+        wantsLayer = true
+        layer?.cornerRadius = DesktopFloatingButtonLayout.cornerRadius
+        layer?.cornerCurve = .continuous
+        layer?.borderWidth = 0.5
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.80).cgColor
+        layer?.masksToBounds = true
+
+        ambientLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        ambientLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        ambientLayer.locations = [0, 0.48, 1]
+        ambientLayer.opacity = 0
+        layer?.addSublayer(ambientLayer)
+
+        borderGradientLayer.type = .conic
+        borderGradientLayer.startPoint = CGPoint(x: 0.5, y: 0.5)
+        borderGradientLayer.endPoint = CGPoint(x: 0.5, y: 0)
+        borderContainerLayer.opacity = 0
+        borderMaskLayer.fillColor = NSColor.clear.cgColor
+        borderMaskLayer.strokeColor = NSColor.white.cgColor
+        borderMaskLayer.lineWidth = 1.15
+        borderContainerLayer.mask = borderMaskLayer
+        borderContainerLayer.addSublayer(borderGradientLayer)
+        layer?.addSublayer(borderContainerLayer)
+
+        sheenLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        sheenLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        sheenLayer.locations = [0, 0.5, 1]
+        sheenLayer.opacity = 0
+        layer?.addSublayer(sheenLayer)
+
+        statusHalo.wantsLayer = true
+        statusHalo.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(statusHalo)
+
+        rippleLayer.fillColor = NSColor.clear.cgColor
+        rippleLayer.lineWidth = 1.25
+        rippleLayer.opacity = 0
+        statusHalo.layer?.addSublayer(rippleLayer)
+
+        statusDot.wantsLayer = true
+        statusDot.layer?.cornerRadius = DesktopFloatingButtonLayout.statusDotSize / 2
+        statusDot.translatesAutoresizingMaskIntoConstraints = false
+        statusHalo.addSubview(statusDot)
+
+        statusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+        statusLabel.textColor = NSColor.white.withAlphaComponent(0.92)
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.maximumNumberOfLines = 1
+        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(statusLabel)
+        NSLayoutConstraint.activate([
+            statusHalo.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
+            statusHalo.centerYAnchor.constraint(equalTo: centerYAnchor),
+            statusHalo.widthAnchor.constraint(equalToConstant: 20),
+            statusHalo.heightAnchor.constraint(equalToConstant: 20),
+            statusDot.centerXAnchor.constraint(equalTo: statusHalo.centerXAnchor),
+            statusDot.centerYAnchor.constraint(equalTo: statusHalo.centerYAnchor),
+            statusDot.widthAnchor.constraint(equalToConstant: DesktopFloatingButtonLayout.statusDotSize),
+            statusDot.heightAnchor.constraint(equalToConstant: DesktopFloatingButtonLayout.statusDotSize),
+            statusLabel.leadingAnchor.constraint(equalTo: statusHalo.trailingAnchor, constant: 4),
+            statusLabel.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -0.5),
+            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+        ])
+        update(items: [], latestCompleted: nil)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+    }
+
+    required init?(coder: NSCoder) { nil }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func layout() {
+        super.layout()
+        ambientLayer.frame = CGRect(x: -bounds.width, y: 0, width: bounds.width * 2, height: bounds.height)
+        borderContainerLayer.frame = bounds
+        borderMaskLayer.frame = bounds
+        borderMaskLayer.path = CGPath(
+            roundedRect: bounds.insetBy(dx: 0.8, dy: 0.8),
+            cornerWidth: DesktopFloatingButtonLayout.cornerRadius - 0.8,
+            cornerHeight: DesktopFloatingButtonLayout.cornerRadius - 0.8,
+            transform: nil
+        )
+        let gradientSide = hypot(bounds.width, bounds.height)
+        borderGradientLayer.frame = CGRect(
+            x: bounds.midX - gradientSide / 2,
+            y: bounds.midY - gradientSide / 2,
+            width: gradientSide,
+            height: gradientSide
+        )
+        rippleLayer.frame = statusHalo.bounds
+        rippleLayer.path = CGPath(
+            ellipseIn: statusHalo.bounds.insetBy(dx: 1.5, dy: 1.5),
+            transform: nil
+        )
+        sheenLayer.frame = CGRect(x: -36, y: 0, width: 36, height: bounds.height)
+    }
+
+    func update(snapshot: WorkStatusSnapshot) {
+        update(
+            items: snapshot.items,
+            latestCompleted: WorkStatusHub.latestCompletedOpenableItem(from: snapshot.items)
+        )
+    }
+
+    private func update(items: [WorkItem], latestCompleted: WorkItem?) {
+        let presentation = DesktopFloatingButtonPresentation.make(
+            items: items,
+            latestCompleted: latestCompleted
+        )
+        guard presentation != currentPresentation else { return }
+        let shouldAnimate = DesktopFloatingButtonMotion.shouldAnimateTransition(
+            from: currentPresentation,
+            to: presentation,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
+        currentPresentation = presentation
+        if shouldAnimate {
+            let push = CATransition()
+            push.type = .push
+            push.subtype = .fromTop
+            push.duration = 0.26
+            push.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            statusLabel.layer?.add(push, forKey: "statusTextPush")
+        }
+        currentTintColor = presentation.tintColor
+        statusLabel.stringValue = presentation.displayText
+        statusDot.layer?.backgroundColor = presentation.tintColor.cgColor
+        statusDot.layer?.shadowColor = presentation.tintColor.cgColor
+        statusDot.layer?.shadowOpacity = 0.55
+        statusDot.layer?.shadowRadius = 4
+        statusDot.layer?.shadowOffset = .zero
+        updatePulse(enabled: presentation.pulses)
+        updateAmbientMotion(enabled: presentation.pulses, tintColor: presentation.tintColor)
+        if shouldAnimate { animateStatusTransition(tintColor: presentation.tintColor) }
+        setAccessibilityLabel(presentation.accessibilityLabel)
+        toolTip = presentation.accessibilityLabel
+    }
+
+    private func updatePulse(enabled: Bool) {
+        statusDot.layer?.removeAnimation(forKey: "statusPulse")
+        rippleLayer.removeAnimation(forKey: "runningRipple")
+        guard enabled, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let opacity = CABasicAnimation(keyPath: "opacity")
+        opacity.fromValue = 0.48
+        opacity.toValue = 1.0
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 0.84
+        scale.toValue = 1.16
+        let group = CAAnimationGroup()
+        group.animations = [opacity, scale]
+        group.duration = 0.9
+        group.autoreverses = true
+        group.repeatCount = .infinity
+        group.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        statusDot.layer?.add(group, forKey: "statusPulse")
+
+        rippleLayer.strokeColor = currentTintColor.withAlphaComponent(0.70).cgColor
+        let rippleScale = CABasicAnimation(keyPath: "transform.scale")
+        rippleScale.fromValue = 0.45
+        rippleScale.toValue = 1.08
+        let rippleOpacity = CAKeyframeAnimation(keyPath: "opacity")
+        rippleOpacity.values = [0, 0.65, 0]
+        rippleOpacity.keyTimes = [0, 0.18, 1]
+        let ripple = CAAnimationGroup()
+        ripple.animations = [rippleScale, rippleOpacity]
+        ripple.duration = 1.35
+        ripple.repeatCount = .infinity
+        ripple.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        rippleLayer.add(ripple, forKey: "runningRipple")
+    }
+
+    private func updateAmbientMotion(enabled: Bool, tintColor: NSColor) {
+        ambientLayer.removeAnimation(forKey: "ambientDrift")
+        borderGradientLayer.removeAnimation(forKey: "borderOrbit")
+        ambientLayer.opacity = 0
+        borderContainerLayer.opacity = 0
+        guard enabled, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+
+        ambientLayer.colors = [
+            tintColor.withAlphaComponent(0).cgColor,
+            tintColor.withAlphaComponent(0.17).cgColor,
+            tintColor.withAlphaComponent(0).cgColor,
+        ]
+        ambientLayer.opacity = 1
+        let drift = CABasicAnimation(keyPath: "transform.translation.x")
+        drift.fromValue = -bounds.width * 0.35
+        drift.toValue = bounds.width * 0.35
+        drift.duration = DesktopFloatingButtonMotion.ambientCycleDuration
+        drift.autoreverses = true
+        drift.repeatCount = .infinity
+        drift.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        ambientLayer.add(drift, forKey: "ambientDrift")
+
+        borderGradientLayer.colors = [
+            tintColor.withAlphaComponent(0).cgColor,
+            tintColor.withAlphaComponent(0).cgColor,
+            tintColor.withAlphaComponent(0.14).cgColor,
+            tintColor.withAlphaComponent(0.78).cgColor,
+            tintColor.withAlphaComponent(0.14).cgColor,
+            tintColor.withAlphaComponent(0).cgColor,
+            tintColor.withAlphaComponent(0).cgColor,
+        ]
+        borderGradientLayer.locations = [0, 0.54, 0.68, 0.78, 0.88, 0.98, 1]
+        borderContainerLayer.opacity = 0.92
+        let orbit = CABasicAnimation(keyPath: "transform.rotation.z")
+        orbit.fromValue = 0
+        orbit.toValue = CGFloat.pi * 2
+        orbit.duration = DesktopFloatingButtonMotion.borderCycleDuration
+        orbit.repeatCount = .infinity
+        orbit.timingFunction = CAMediaTimingFunction(name: .linear)
+        borderGradientLayer.add(orbit, forKey: "borderOrbit")
+    }
+
+    private func animateStatusTransition(tintColor: NSColor) {
+        let bounce = CAKeyframeAnimation(keyPath: "transform.scale")
+        bounce.values = [1.0, 1.045, 0.992, 1.0]
+        bounce.keyTimes = [0, 0.34, 0.68, 1]
+        bounce.duration = DesktopFloatingButtonMotion.transitionDuration
+        bounce.timingFunctions = [
+            CAMediaTimingFunction(name: .easeOut),
+            CAMediaTimingFunction(name: .easeInEaseOut),
+            CAMediaTimingFunction(name: .easeOut),
+        ]
+        layer?.add(bounce, forKey: "statusBounce")
+
+        let dotPop = CAKeyframeAnimation(keyPath: "transform.scale")
+        dotPop.values = [0.55, 1.45, 0.88, 1.0]
+        dotPop.keyTimes = [0, 0.32, 0.70, 1]
+        dotPop.duration = 0.46
+        dotPop.timingFunctions = [
+            CAMediaTimingFunction(name: .easeOut),
+            CAMediaTimingFunction(name: .easeInEaseOut),
+            CAMediaTimingFunction(name: .easeOut),
+        ]
+        statusDot.layer?.add(dotPop, forKey: "statusDotPop")
+
+        rippleLayer.strokeColor = tintColor.withAlphaComponent(0.80).cgColor
+        let burstScale = CABasicAnimation(keyPath: "transform.scale")
+        burstScale.fromValue = 0.35
+        burstScale.toValue = 1.15
+        let burstOpacity = CAKeyframeAnimation(keyPath: "opacity")
+        burstOpacity.values = [0, 0.9, 0]
+        burstOpacity.keyTimes = [0, 0.18, 1]
+        let burst = CAAnimationGroup()
+        burst.animations = [burstScale, burstOpacity]
+        burst.duration = 0.58
+        burst.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        rippleLayer.add(burst, forKey: "statusBurst")
+
+        sheenLayer.colors = [
+            tintColor.withAlphaComponent(0).cgColor,
+            tintColor.withAlphaComponent(0.34).cgColor,
+            tintColor.withAlphaComponent(0).cgColor,
+        ]
+        let travel = CABasicAnimation(keyPath: "transform.translation.x")
+        travel.fromValue = 0
+        travel.toValue = bounds.width + 72
+        let opacity = CAKeyframeAnimation(keyPath: "opacity")
+        opacity.values = [0, 0.9, 0.9, 0]
+        opacity.keyTimes = [0, 0.18, 0.72, 1]
+        let sweep = CAAnimationGroup()
+        sweep.animations = [travel, opacity]
+        sweep.duration = DesktopFloatingButtonMotion.transitionDuration
+        sweep.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        sheenLayer.add(sweep, forKey: "statusSheen")
+
+        let borderFlash = CAKeyframeAnimation(keyPath: "borderColor")
+        borderFlash.values = [
+            NSColor.white.withAlphaComponent(0.14).cgColor,
+            tintColor.withAlphaComponent(0.80).cgColor,
+            NSColor.white.withAlphaComponent(0.14).cgColor,
+        ]
+        borderFlash.keyTimes = [0, 0.38, 1]
+        borderFlash.duration = 0.72
+        layer?.add(borderFlash, forKey: "statusBorderFlash")
+    }
+
+    func playEntrance() {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let scale = CASpringAnimation(keyPath: "transform.scale")
+        scale.fromValue = 0.62
+        scale.toValue = 1
+        scale.mass = 0.85
+        scale.stiffness = 330
+        scale.damping = 22
+        scale.initialVelocity = 2.2
+        scale.duration = DesktopFloatingButtonMotion.entranceDuration
+        layer?.add(scale, forKey: "floatingEntranceScale")
+
+        let slide = CABasicAnimation(keyPath: "transform.translation.x")
+        slide.fromValue = -22
+        slide.toValue = 0
+        slide.duration = 0.32
+        slide.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        layer?.add(slide, forKey: "floatingEntranceSlide")
+    }
+
+    func playExit() {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 1
+        scale.toValue = 0.78
+        scale.duration = 0.22
+        scale.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        layer?.add(scale, forKey: "floatingExitScale")
+    }
+
+    func motionSnapshot() -> DesktopFloatingButtonMotionSnapshot {
+        DesktopFloatingButtonMotionSnapshot(
+            root: Set(layer?.animationKeys() ?? []),
+            statusDot: Set(statusDot.layer?.animationKeys() ?? []),
+            ripple: Set(rippleLayer.animationKeys() ?? []),
+            ambient: Set(ambientLayer.animationKeys() ?? []),
+            border: Set(borderGradientLayer.animationKeys() ?? []),
+            sheen: Set(sheenLayer.animationKeys() ?? [])
+        )
+    }
+
+    override func updateTrackingAreas() {
+        if let trackingAreaReference {
+            removeTrackingArea(trackingAreaReference)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        trackingAreaReference = trackingArea
+        super.updateTrackingAreas()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        NSCursor.pointingHand.push()
+        setHovering(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        NSCursor.pop()
+        setHovering(false)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        mouseDownLocation = NSEvent.mouseLocation
+        windowOriginAtMouseDown = window?.frame.origin
+        didDrag = false
+        setScale(0.96)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let start = mouseDownLocation,
+              let origin = windowOriginAtMouseDown,
+              let window else { return }
+        let current = NSEvent.mouseLocation
+        let deltaX = current.x - start.x
+        let deltaY = current.y - start.y
+        if hypot(deltaX, deltaY) > 3 { didDrag = true }
+        guard didDrag else { return }
+        setScale(1)
+        window.setFrameOrigin(NSPoint(x: origin.x + deltaX, y: origin.y + deltaY))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        setScale(isHovering ? 1.025 : 1)
+        if !didDrag { onActivate?() }
+        mouseDownLocation = nil
+        windowOriginAtMouseDown = nil
+        didDrag = false
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        onActivate?()
+        return true
+    }
+
+    private func setHovering(_ hovering: Bool) {
+        isHovering = hovering
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            animator().alphaValue = hovering ? 1 : 0.92
+        }
+        layer?.borderColor = hovering
+            ? currentTintColor.withAlphaComponent(0.48).cgColor
+            : NSColor.white.withAlphaComponent(0.14).cgColor
+        let targetScale: CGFloat = hovering && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            ? 1.025
+            : 1
+        setScale(targetScale)
+    }
+
+    private func setScale(_ scale: CGFloat) {
+        guard let layer else { return }
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(0.12)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        layer.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
+        CATransaction.commit()
     }
 }
 

@@ -150,3 +150,41 @@ import Testing
         "codex:b",
     ])
 }
+
+@Test func latestCompletedOpenableItemSkipsNonDestinationsAndUsesRecency() {
+    let items = [
+        WorkItem(
+            id: "older",
+            source: "A",
+            title: "较早完成",
+            status: .completed,
+            updatedAt: Date(timeIntervalSince1970: 100),
+            outputPath: "/tmp/older"
+        ),
+        WorkItem(
+            id: "newer",
+            source: "A",
+            title: "最新完成",
+            status: .completed,
+            updatedAt: Date(timeIntervalSince1970: 200),
+            openURL: "https://example.com/result"
+        ),
+        WorkItem(
+            id: "no-destination",
+            source: "A",
+            title: "没有入口",
+            status: .completed,
+            updatedAt: Date(timeIntervalSince1970: 300)
+        ),
+        WorkItem(
+            id: "idle",
+            source: "A",
+            title: "空闲",
+            status: .idle,
+            updatedAt: Date(timeIntervalSince1970: 400),
+            outputPath: "/tmp/idle"
+        ),
+    ]
+
+    #expect(WorkStatusHub.latestCompletedOpenableItem(from: items)?.id == "newer")
+}

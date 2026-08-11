@@ -132,6 +132,15 @@ public struct WorkStatusSnapshot: Equatable, Sendable {
 }
 
 public enum WorkStatusHub {
+    public static func latestCompletedOpenableItem(from items: [WorkItem]) -> WorkItem? {
+        items
+            .filter { item in
+                item.status == .completed
+                    && (item.id.hasPrefix("codex:") || item.openURL != nil || item.outputPath != nil)
+            }
+            .max { $0.updatedAt < $1.updatedAt }
+    }
+
     public static func codexItems(from groups: [ProjectGroup]) -> [WorkItem] {
         groups.flatMap { group in
             group.threads.map { thread in
