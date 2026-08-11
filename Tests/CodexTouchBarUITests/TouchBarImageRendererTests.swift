@@ -143,6 +143,48 @@ import Testing
     #expect(DesktopFloatingButtonLayout.statusDotSize == 8)
 }
 
+@Test func desktopWindowsSnapToEachVisibleScreenEdge() {
+    let visibleFrame = NSRect(x: 0, y: 0, width: 1_440, height: 900)
+    let rightTop = DesktopWindowEdgeSnap.snappedFrame(
+        NSRect(x: 1_335, y: 814, width: 100, height: 80),
+        in: visibleFrame
+    )
+    #expect(rightTop.origin == NSPoint(x: 1_340, y: 820))
+
+    let leftBottom = DesktopWindowEdgeSnap.snappedFrame(
+        NSRect(x: 12, y: 8, width: 372, height: 280),
+        in: visibleFrame
+    )
+    #expect(leftBottom.origin == .zero)
+}
+
+@Test func floatingPillSnapsItsVisibleCapsuleRatherThanItsTransparentCanvas() {
+    let visibleFrame = NSRect(x: 0, y: 0, width: 1_440, height: 900)
+    let inset = DesktopFloatingButtonLayout.animationInset
+    let snapped = DesktopWindowEdgeSnap.snappedFrame(
+        NSRect(x: 1_326, y: 5, width: 120, height: 50),
+        in: visibleFrame,
+        contentInsets: NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
+    )
+    #expect(snapped.origin == NSPoint(x: 1_326, y: -6))
+}
+
+@Test func expandedPanelAndCollapsedPillShareTheSameTopRightAnchor() {
+    let floatingFrame = NSRect(x: 1_320, y: 840, width: 120, height: 50)
+    let panelFrame = DesktopPanelAnchorLayout.panelFrame(
+        anchoredToFloatingPanel: floatingFrame,
+        panelSize: NSSize(width: 372, height: 290)
+    )
+    #expect(panelFrame.maxX == floatingFrame.maxX)
+    #expect(panelFrame.maxY == floatingFrame.maxY)
+
+    let restoredFloatingFrame = DesktopPanelAnchorLayout.floatingFrame(
+        anchoredToPanel: panelFrame,
+        floatingSize: floatingFrame.size
+    )
+    #expect(restoredFloatingFrame == floatingFrame)
+}
+
 @Test func floatingStatusButtonPrioritizesLiveStatus() {
     let completed = WorkItem(
         id: "done",

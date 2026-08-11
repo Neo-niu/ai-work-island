@@ -16,6 +16,62 @@ enum DesktopPanelWindowPolicy {
     }
 }
 
+enum DesktopWindowEdgeSnap {
+    static let threshold: CGFloat = 18
+    static let noInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+
+    static func snappedFrame(
+        _ frame: NSRect,
+        in visibleFrame: NSRect,
+        contentInsets: NSEdgeInsets = noInsets
+    ) -> NSRect {
+        var snapped = frame
+        let visualMinX = frame.minX + contentInsets.left
+        let visualMaxX = frame.maxX - contentInsets.right
+        let visualMinY = frame.minY + contentInsets.bottom
+        let visualMaxY = frame.maxY - contentInsets.top
+
+        if abs(visualMinX - visibleFrame.minX) <= threshold {
+            snapped.origin.x = visibleFrame.minX - contentInsets.left
+        } else if abs(visualMaxX - visibleFrame.maxX) <= threshold {
+            snapped.origin.x = visibleFrame.maxX - frame.width + contentInsets.right
+        }
+
+        if abs(visualMinY - visibleFrame.minY) <= threshold {
+            snapped.origin.y = visibleFrame.minY - contentInsets.bottom
+        } else if abs(visualMaxY - visibleFrame.maxY) <= threshold {
+            snapped.origin.y = visibleFrame.maxY - frame.height + contentInsets.top
+        }
+        return snapped
+    }
+}
+
+enum DesktopPanelAnchorLayout {
+    static func panelFrame(
+        anchoredToFloatingPanel floatingFrame: NSRect,
+        panelSize: NSSize
+    ) -> NSRect {
+        NSRect(
+            x: floatingFrame.maxX - panelSize.width,
+            y: floatingFrame.maxY - panelSize.height,
+            width: panelSize.width,
+            height: panelSize.height
+        )
+    }
+
+    static func floatingFrame(
+        anchoredToPanel panelFrame: NSRect,
+        floatingSize: NSSize
+    ) -> NSRect {
+        NSRect(
+            x: panelFrame.maxX - floatingSize.width,
+            y: panelFrame.maxY - floatingSize.height,
+            width: floatingSize.width,
+            height: floatingSize.height
+        )
+    }
+}
+
 enum DesktopPanelLayout {
     static let width: CGFloat = 372
 
@@ -251,6 +307,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
     private var codexResults: [String: String] = [:]
     private var codexRows: [String: WorkItemRowView] = [:]
     private var displayMode: DesktopPanelMode = .background
+    private var isSynchronizingWindowPositions = false
 
     override init() {
         panel = NSPanel(
@@ -311,6 +368,9 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         isHoverExpanded = false
         isMinimizedToFloatingButton = false
         applyDisplayMode(hoverExpanded: false)
+        if floatingPanel.isVisible {
+            alignPanelToFloatingPanel()
+        }
         floatingPanel.orderOut(nil)
         panel.orderFrontRegardless()
     }
@@ -320,7 +380,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         isHoverExpanded = false
         isMinimizedToFloatingButton = true
         applyDisplayMode(hoverExpanded: false)
-        positionFloatingPanelIfNeeded()
+        positionFloatingPanelForCollapsedState()
         panel.orderOut(nil)
         floatingPanel.alphaValue = 1
         floatingPanel.orderFrontRegardless()
@@ -645,6 +705,37 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         onVisibilityChanged?(false)
     }
 
+    func windowDidMove(_ notification: Notification) {
+        guard !isSynchronizingWindowPositions,
+              let window = notification.object as? NSWindow,
+              let screen = screenMostCovered(by: window.frame) else { return }
+        let contentInsets: NSEdgeInsets = window === floatingPanel
+            ? NSEdgeInsets(
+                top: DesktopFloatingButtonLayout.animationInset,
+                left: DesktopFloatingButtonLayout.animationInset,
+                bottom: DesktopFloatingButtonLayout.animationInset,
+                right: DesktopFloatingButtonLayout.animationInset
+            )
+            : DesktopWindowEdgeSnap.noInsets
+        let snappedFrame = DesktopWindowEdgeSnap.snappedFrame(
+            window.frame,
+            in: screen.visibleFrame,
+            contentInsets: contentInsets
+        )
+        if snappedFrame.origin != window.frame.origin {
+            window.setFrameOrigin(snappedFrame.origin)
+        }
+        if window === panel {
+            alignFloatingPanelToPanel()
+        }
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        guard !isSynchronizingWindowPositions,
+              notification.object as? NSWindow === panel else { return }
+        alignFloatingPanelToPanel()
+    }
+
     private func configurePanel() {
         panel.delegate = self
         panel.title = "AI 工作岛"
@@ -730,7 +821,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         cancelPendingAutoCollapse()
         isHoverExpanded = false
         isMinimizedToFloatingButton = true
-        positionFloatingPanelIfNeeded()
+        positionFloatingPanelForCollapsedState()
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard !reduceMotion else {
             panel.orderOut(nil)
@@ -764,6 +855,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
     }
 
     private func configureFloatingPanel() {
+        floatingPanel.delegate = self
         floatingPanel.isFloatingPanel = true
         floatingPanel.level = .floating
         floatingPanel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -794,6 +886,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
 
     private func activateFloatingButton(hoverExpanded: Bool) {
         guard isMinimizedToFloatingButton else { return }
+        alignPanelToFloatingPanel()
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard !reduceMotion else {
             isMinimizedToFloatingButton = false
@@ -868,8 +961,11 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         pendingAutoCollapse = nil
     }
 
-    private func positionFloatingPanelIfNeeded() {
-        guard !didPositionFloatingPanel else { return }
+    private func positionFloatingPanelForCollapsedState() {
+        guard !didPositionFloatingPanel else {
+            alignFloatingPanelToPanel()
+            return
+        }
         let size = DesktopFloatingButtonLayout.canvasSize
         if panel.frame.origin != .zero {
             floatingPanel.setFrameOrigin(NSPoint(
@@ -886,6 +982,44 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
             ))
         }
         didPositionFloatingPanel = true
+        alignPanelToFloatingPanel()
+    }
+
+    private func alignPanelToFloatingPanel() {
+        setFrame(
+            DesktopPanelAnchorLayout.panelFrame(
+                anchoredToFloatingPanel: floatingPanel.frame,
+                panelSize: panel.frame.size
+            ),
+            for: panel
+        )
+    }
+
+    private func alignFloatingPanelToPanel() {
+        setFrame(
+            DesktopPanelAnchorLayout.floatingFrame(
+                anchoredToPanel: panel.frame,
+                floatingSize: DesktopFloatingButtonLayout.canvasSize
+            ),
+            for: floatingPanel
+        )
+    }
+
+    private func setFrame(_ frame: NSRect, for window: NSWindow) {
+        guard window.frame != frame else { return }
+        isSynchronizingWindowPositions = true
+        window.setFrame(frame, display: false)
+        isSynchronizingWindowPositions = false
+    }
+
+    private func screenMostCovered(by frame: NSRect) -> NSScreen? {
+        NSScreen.screens.max { lhs, rhs in
+            let lhsIntersection = lhs.visibleFrame.intersection(frame)
+            let rhsIntersection = rhs.visibleFrame.intersection(frame)
+            let lhsArea = lhsIntersection.isNull ? 0 : lhsIntersection.width * lhsIntersection.height
+            let rhsArea = rhsIntersection.isNull ? 0 : rhsIntersection.width * rhsIntersection.height
+            return lhsArea < rhsArea
+        } ?? NSScreen.main
     }
 }
 
@@ -1826,6 +1960,10 @@ private final class PanelBackgroundView: NSVisualEffectView {
 
     override func mouseExited(with event: NSEvent) {
         onHoverChanged?(false)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
     }
 
     private func updateColors() {
