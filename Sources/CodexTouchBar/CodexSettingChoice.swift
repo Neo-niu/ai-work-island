@@ -5,6 +5,7 @@ enum EffortChoice: String, CaseIterable, Sendable {
     case medium
     case high
     case xhigh
+    case max
     case ultra
 
     static let commandOptionCount = 6
@@ -15,6 +16,7 @@ enum EffortChoice: String, CaseIterable, Sendable {
         case .medium: 1
         case .high: 2
         case .xhigh: 3
+        case .max: 4
         case .ultra: 5
         }
     }
@@ -25,6 +27,7 @@ enum EffortChoice: String, CaseIterable, Sendable {
         case .medium: localized(turkish: "Orta", english: "Medium")
         case .high: localized(turkish: "Yüksek", english: "High")
         case .xhigh: localized(turkish: "Çok Yüksek", english: "Extra High")
+        case .max: "Max"
         case .ultra: "Ultra"
         }
     }
@@ -35,16 +38,18 @@ enum EffortChoice: String, CaseIterable, Sendable {
         case .medium: "中"
         case .high: "高"
         case .xhigh: "极高"
+        case .max: "Max"
         case .ultra: "Ultra"
         }
     }
 
     var accessibilityLabels: [String] {
         switch self {
-        case .low: ["Sınırlı", "Low"]
-        case .medium: ["Orta", "Medium"]
-        case .high: ["Yüksek", "High"]
-        case .xhigh: ["Çok Yüksek", "Extra High", "Very High"]
+        case .low: ["Sınırlı", "Low", "轻度", "低度"]
+        case .medium: ["Orta", "Medium", "中度", "中等"]
+        case .high: ["Yüksek", "High", "高度", "高等"]
+        case .xhigh: ["Çok Yüksek", "Extra High", "Very High", "极高"]
+        case .max: ["Max"]
         case .ultra: ["Ultra"]
         }
     }

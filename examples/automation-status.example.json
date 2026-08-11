@@ -1,0 +1,11 @@
+{
+  "id": "daily-data-merge",
+  "source": "数据自动化",
+  "title": "下载并合并日报",
+  "detail": "正在合并 Tableau 导出文件",
+  "status": "running",
+  "startedAt": "2026-08-10T10:00:00Z",
+  "updatedAt": "2026-08-10T10:30:00Z",
+  "staleAfterSeconds": 1800,
+  "outputPath": "/Users/your-name/Documents/output.xlsx"
+}

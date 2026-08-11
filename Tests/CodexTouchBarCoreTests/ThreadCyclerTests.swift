@@ -34,3 +34,31 @@ import Testing
     #expect(group.displayName(maxLength: 12) == "flutter_des…")
     #expect(group.displayName(maxLength: 40) == "flutter_desktop_updater_project")
 }
+
+@Test func cyclesProcessingAndUnreadThreadsIndependently() {
+    let processing = ActiveThread(
+        id: "processing",
+        cwd: URL(fileURLWithPath: "/tmp/project"),
+        startedAt: .distantPast,
+        updatedAt: .distantPast,
+        isActive: true
+    )
+    let unread = ActiveThread(
+        id: "unread",
+        cwd: URL(fileURLWithPath: "/tmp/project"),
+        startedAt: .distantPast,
+        updatedAt: .distantPast,
+        isActive: false,
+        isUnread: true
+    )
+    let group = ProjectGroup(
+        id: "project",
+        name: "Project",
+        threads: [processing, unread],
+        isUnnamed: false
+    )
+    var cycler = ThreadStatusCycler()
+
+    #expect(cycler.nextThread(in: [group], category: .processing)?.id == "processing")
+    #expect(cycler.nextThread(in: [group], category: .unread)?.id == "unread")
+}

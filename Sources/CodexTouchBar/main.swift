@@ -17,6 +17,11 @@ private func runDiagnostics() {
 
     Task {
         let snapshot = await scanner.scanSnapshot()
+        if let shortTermLimit = snapshot.shortTermLimit {
+            print("5-hour limit\t\(shortTermLimit.remainingPercent)% remaining")
+        } else {
+            print("5-hour limit\tUnavailable")
+        }
         if let weeklyLimit = snapshot.weeklyLimit {
             print("Weekly limit\t\(weeklyLimit.remainingPercent)% remaining")
         } else {
@@ -58,6 +63,37 @@ private func runHermesDiagnostics() {
     print("Touch Bar title\t\(status.compactTitle)")
 }
 
+private func runAutomationDiagnostics() {
+    let scanner = AutomationStatusScanner()
+    let result = scanner.scan()
+    print("Status directory\t\(scanner.statusDirectory.path)")
+    print("Automation tasks\t\(result.items.count)")
+    for item in result.items {
+        print("\(item.status.rawValue)\t\(item.source)\t\(item.title)\t\(item.updatedAt.ISO8601Format())")
+    }
+    for issue in result.issues {
+        print("Issue\t\(issue)")
+    }
+    exit(result.issues.isEmpty ? EXIT_SUCCESS : EXIT_FAILURE)
+}
+
+private func runWidgetDiagnostics() {
+    let store = WidgetSnapshotStore()
+    print("Widget snapshot\t\(store.snapshotURL.path)")
+    do {
+        let snapshot = try store.read()
+        print("Widget tasks\t\(snapshot.items.count)")
+        print("Widget refreshed\t\(snapshot.refreshedAt.ISO8601Format())")
+        for item in snapshot.items {
+            print("\(item.status.rawValue)\t\(item.source)\t\(item.title)")
+        }
+        exit(EXIT_SUCCESS)
+    } catch {
+        print("Widget snapshot unavailable\t\(error.localizedDescription)")
+        exit(EXIT_FAILURE)
+    }
+}
+
 private func runCompanyQuotaDiagnostics() {
     let scanner = CompanyQuotaScanner()
     Task {
@@ -81,15 +117,29 @@ private func runEffortDiagnostic(rawValue: String) {
         exit(EXIT_FAILURE)
     }
 
-    let controller = CodexAccessibilityController()
-    Task { @MainActor in
+    let scanner = RolloutScanner()
+    let client = CodexIPCClient()
+    Task {
         do {
-            try await controller.apply(effort: choice)
-            print("Selected effort: \(choice.title)")
-            exit(EXIT_SUCCESS)
+            guard let setting = await scanner.currentThreadReasoningSetting() else {
+                throw CodexIPCClient.ClientError.requestFailed("未找到当前任务")
+            }
+            try await client.updateThreadSettings(
+                threadID: setting.threadID,
+                model: setting.model,
+                effort: choice.rawValue
+            )
+            for _ in 0..<50 {
+                if await scanner.currentThreadReasoningSetting()?.effort == choice.rawValue {
+                    print("Selected effort: \(choice.title)")
+                    exit(EXIT_SUCCESS)
+                }
+                try await Task.sleep(nanoseconds: 100_000_000)
+            }
+            throw CodexIPCClient.ClientError.requestFailed("数据库回读未确认")
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-            print("Accessibility diagnostic failed: \(message)")
+            print("Codex IPC diagnostic failed: \(message)")
             exit(EXIT_FAILURE)
         }
     }
@@ -115,6 +165,10 @@ case .diagnoseRollouts:
     runDiagnostics()
 case .diagnoseHermes:
     runHermesDiagnostics()
+case .diagnoseAutomation:
+    runAutomationDiagnostics()
+case .diagnoseWidget:
+    runWidgetDiagnostics()
 case .diagnoseCompanyQuota:
     runCompanyQuotaDiagnostics()
 case let .diagnoseEffort(rawValue):

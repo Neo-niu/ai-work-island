@@ -13,7 +13,7 @@ final class CodexAccessibilityController {
         var openerKeywords: [String] {
             switch self {
             case .effort:
-                ["çaba", "effort", "reasoning"]
+                ["çaba", "effort", "reasoning", "推理", "思考", "程度"]
             case .speed:
                 ["hız", "speed", "service tier"]
             }
@@ -38,6 +38,8 @@ final class CodexAccessibilityController {
         case controlNotFound(ControlKind)
         case optionNotFound(String)
         case actionFailed
+        case threadTitleUnavailable
+        case threadNotVisible
 
         var errorDescription: String? {
             switch self {
@@ -59,6 +61,10 @@ final class CodexAccessibilityController {
                 "未找到 Codex 选项“\(option)”。"
             case .actionFailed:
                 "Codex 未接受本次设置更改。"
+            case .threadTitleUnavailable:
+                "无法读取目标会话标题。"
+            case .threadNotVisible:
+                "目标任务不在当前 Codex 侧栏中；未执行输入操作。"
             }
         }
     }
@@ -118,6 +124,24 @@ final class CodexAccessibilityController {
     }
 
     func apply(effort choice: EffortChoice) async throws {
+        do {
+            try await select(
+                kind: .effort,
+                labels: choice.accessibilityLabels,
+                displayName: choice.title
+            )
+            return
+        } catch let error as ControllerError {
+            switch error {
+            case .controlNotFound(.effort):
+                throw error
+            case .optionNotFound, .actionFailed:
+                break
+            default:
+                throw error
+            }
+        }
+
         try prepareCommandBridge()
         let commands = CodexCommandPlan.effort(
             targetIndex: choice.commandTargetIndex,
@@ -146,6 +170,65 @@ final class CodexAccessibilityController {
             }
             throw ControllerError.actionFailed
         }
+    }
+
+    func openVisibleThread(title: String) async throws {
+        let query = title.split(whereSeparator: \.isNewline).first.map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !query.isEmpty else {
+            throw ControllerError.threadTitleUnavailable
+        }
+        guard hasAccessibilityAccess() else {
+            throw ControllerError.accessibilityPermissionRequired
+        }
+        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.codexBundleIdentifier else {
+            throw ControllerError.codexMustBeFrontmost
+        }
+        guard let application = NSRunningApplication.runningApplications(
+            withBundleIdentifier: Self.codexBundleIdentifier
+        ).first else {
+            throw ControllerError.codexNotRunning
+        }
+
+        let root = AXUIElementCreateApplication(application.processIdentifier)
+        _ = enableEnhancedAccessibility(for: root)
+        let target = normalized(String(query.prefix(120)))
+        for _ in 0..<12 {
+            let match = accessibilityElements(in: root, sidebarOnly: true)
+                .compactMap { snapshot -> (AXUIElement, Int, Int)? in
+                    guard snapshot.canPress,
+                          snapshot.role == (kAXButtonRole as String),
+                          let frame = rectAttribute("AXFrame", of: snapshot.element),
+                          frame.minX < 320 else {
+                        return nil
+                    }
+                    let candidate = normalized(snapshot.rawText)
+                    let score: Int
+                    if candidate == target {
+                        score = 100
+                    } else if candidate.hasPrefix("\(target) ") {
+                        score = 90
+                    } else if candidate.contains(target), target.count >= 6 {
+                        score = 70
+                    } else {
+                        return nil
+                    }
+                    return (snapshot.element, score, candidate.count)
+                }
+                .max {
+                    if $0.1 != $1.1 { return $0.1 < $1.1 }
+                    return $0.2 > $1.2
+                }?
+                .0
+            if let match {
+                guard AXUIElementPerformAction(match, kAXPressAction as CFString) == .success else {
+                    throw ControllerError.actionFailed
+                }
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw ControllerError.threadNotVisible
     }
 
     private func prepareCommandBridge() throws {
@@ -195,11 +278,22 @@ final class CodexAccessibilityController {
 
     private func send(_ commands: [CodexCommand]) async throws {
         try await Task.sleep(nanoseconds: 150_000_000)
+        var previousCommand: CodexCommand?
         for command in commands {
+            if previousCommand == .decreaseEffort, command == .increaseEffort {
+                // Boundary decreases do not change the visible value, but Codex
+                // still processes them asynchronously. Let the reset queue drain
+                // before applying the target steps or the first increase is lost.
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+            }
             guard postKey(for: command) else {
                 throw ControllerError.actionFailed
             }
-            try await Task.sleep(nanoseconds: 140_000_000)
+            // Codex persists reasoning changes asynchronously. Sending the reset
+            // and target steps too quickly drops intermediate commands and can
+            // leave the composer at a lower effort than requested.
+            try await Task.sleep(nanoseconds: 550_000_000)
+            previousCommand = command
         }
     }
 
@@ -262,7 +356,10 @@ final class CodexAccessibilityController {
 
         let root = AXUIElementCreateApplication(targetPID)
         let activationError = enableEnhancedAccessibility(for: root)
-        let keywords = ["çaba", "effort", "reasoning", "yüksek", "high", "hız", "speed"]
+        let keywords = [
+            "çaba", "effort", "reasoning", "yüksek", "high", "hız", "speed",
+            "推理", "思考", "程度", "轻度", "中度", "高度", "极高", "max", "ultra",
+        ]
         var lines = [
             "enhancedActivation.error=\(activationError.rawValue)",
             "application.attributes=\(attributeNames(of: root).joined(separator: ","))",
@@ -299,7 +396,7 @@ final class CodexAccessibilityController {
     }
 
     private func select(kind: ControlKind, labels: [String], displayName: String) async throws {
-        guard requestAccessibilityAccess() else {
+        guard hasAccessibilityAccess() else {
             throw ControllerError.accessibilityPermissionRequired
         }
         guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.codexBundleIdentifier else {

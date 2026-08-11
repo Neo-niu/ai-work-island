@@ -3,6 +3,41 @@ import CSQLite
 import Foundation
 import Testing
 
+@Test func readsCurrentThreadReasoningEffortByRecency() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let databaseURL = root.appendingPathComponent("state.sqlite")
+    var database: OpaquePointer?
+    #expect(sqlite3_open(databaseURL.path, &database) == SQLITE_OK)
+    guard let database else { return }
+    defer { sqlite3_close(database) }
+    let sql = """
+    CREATE TABLE threads (
+      id TEXT PRIMARY KEY, model TEXT, reasoning_effort TEXT, archived INTEGER NOT NULL,
+      recency_at_ms INTEGER, updated_at_ms INTEGER, updated_at INTEGER NOT NULL
+    );
+    INSERT INTO threads VALUES ('older', 'gpt-old', 'high', 0, 100, 100, 1);
+    INSERT INTO threads VALUES ('current', 'gpt-current', 'xhigh', 0, 200, 200, 1);
+    """
+    #expect(sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK)
+    let scanner = RolloutScanner(
+        sessionsRoot: root,
+        stateDatabase: databaseURL,
+        globalStateFile: nil
+    )
+    #expect(await scanner.currentReasoningEffort() == "xhigh")
+    #expect(
+        await scanner.currentThreadReasoningSetting()
+            == CurrentThreadReasoningSetting(
+                threadID: "current",
+                model: "gpt-current",
+                effort: "xhigh"
+            )
+    )
+}
+
 @Test func reportsOnlyRolloutsWhoseLatestTaskEventIsStarted() async throws {
     let sessionsRoot = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -111,6 +146,7 @@ import Testing
     let sql = """
     CREATE TABLE threads (
       id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
       cwd TEXT NOT NULL,
       rollout_path TEXT NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -122,11 +158,11 @@ import Testing
       child_thread_id TEXT NOT NULL
     );
     INSERT INTO threads VALUES (
-      'visible-root', '/tmp/visible-project', '\(rootRollout.path)',
+      'visible-root', 'Visible root', '/tmp/visible-project', '\(rootRollout.path)',
       \(updatedAt), \(updatedAt * 1_000), 0
     );
     INSERT INTO threads VALUES (
-      'delegated-child', '/tmp/visible-project', '\(childRollout.path)',
+      'delegated-child', 'Delegated child', '/tmp/visible-project', '\(childRollout.path)',
       \(childUpdatedAt), \(childUpdatedAt * 1_000), 0
     );
     INSERT INTO thread_spawn_edges VALUES ('visible-root', 'delegated-child');
@@ -145,6 +181,57 @@ import Testing
     #expect(threads.first?.cwd.path == "/tmp/visible-project")
     #expect(Int64(threads.first?.updatedAt.timeIntervalSince1970 ?? 0) == updatedAt)
     #expect(Int64(threads.first?.projectRecencyAt.timeIntervalSince1970 ?? 0) == childUpdatedAt)
+}
+
+@Test func sessionIndexNameOverridesTheStaleDatabaseTitle() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let rolloutURL = root.appendingPathComponent("root.jsonl")
+    try rollout(
+        id: "renamed-thread",
+        cwd: "/tmp/project",
+        events: ["task_started"],
+        at: rolloutURL
+    )
+    let databaseURL = root.appendingPathComponent("state.sqlite")
+    var database: OpaquePointer?
+    #expect(sqlite3_open(databaseURL.path, &database) == SQLITE_OK)
+    guard let database else { return }
+    defer { sqlite3_close(database) }
+    let updatedAt = Int64(Date().timeIntervalSince1970)
+    let sql = """
+    CREATE TABLE threads (
+      id TEXT PRIMARY KEY, title TEXT NOT NULL, cwd TEXT NOT NULL,
+      rollout_path TEXT NOT NULL, updated_at INTEGER NOT NULL,
+      recency_at_ms INTEGER NOT NULL, archived INTEGER NOT NULL
+    );
+    CREATE TABLE thread_spawn_edges (
+      parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL
+    );
+    INSERT INTO threads VALUES (
+      'renamed-thread', 'Original prompt', '/tmp/project', '\(rolloutURL.path)',
+      \(updatedAt), \(updatedAt * 1_000), 0
+    );
+    """
+    #expect(sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK)
+
+    let sessionIndexURL = root.appendingPathComponent("session_index.jsonl")
+    try """
+    {"id":"renamed-thread","thread_name":"Current conversation title","updated_at":"2026-08-10T03:37:21Z"}
+
+    """.write(to: sessionIndexURL, atomically: true, encoding: .utf8)
+    let scanner = RolloutScanner(
+        sessionsRoot: root,
+        stateDatabase: databaseURL,
+        globalStateFile: nil,
+        sessionIndexFile: sessionIndexURL,
+        recentFileInterval: 60
+    )
+
+    #expect(await scanner.scan().first?.title == "Current conversation title")
 }
 
 @Test func doesNotMapAnUnreadDelegatedTaskToItsVisibleRoot() async throws {
@@ -181,6 +268,7 @@ import Testing
     let sql = """
     CREATE TABLE threads (
       id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
       cwd TEXT NOT NULL,
       rollout_path TEXT NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -192,11 +280,11 @@ import Testing
       child_thread_id TEXT NOT NULL
     );
     INSERT INTO threads VALUES (
-      'visible-root', '/tmp/visible-project', '\(rootRollout.path)',
+      'visible-root', 'Visible root', '/tmp/visible-project', '\(rootRollout.path)',
       \(updatedAt), \(updatedAt * 1_000), 0
     );
     INSERT INTO threads VALUES (
-      'delegated-child', '/tmp/visible-project', '\(childRollout.path)',
+      'delegated-child', 'Delegated child', '/tmp/visible-project', '\(childRollout.path)',
       \(updatedAt), \(updatedAt * 1_000), 0
     );
     INSERT INTO thread_spawn_edges VALUES ('visible-root', 'delegated-child');
@@ -258,6 +346,8 @@ import Testing
     )
     let snapshot = await scanner.scanSnapshot()
 
+    #expect(snapshot.shortTermLimit?.usedPercent == 25)
+    #expect(snapshot.shortTermLimit?.remainingPercent == 75)
     #expect(snapshot.weeklyLimit?.usedPercent == 7)
     #expect(snapshot.weeklyLimit?.remainingPercent == 93)
 }
@@ -444,7 +534,19 @@ private func rollout(
     #expect(update.bytesRead == appended.utf8.count)
     #expect(update.processedOffset == initialSize + UInt64(appended.utf8.count))
     #expect(update.latestEvent?.type == "task_complete")
+    #expect(update.latestShortTermLimit == nil)
     #expect(update.latestWeeklyLimit?.remainingPercent == 94)
+}
+
+@Test func tailReaderReportsFiveHourAndWeeklyRemainingQuota() throws {
+    let line = Data("""
+    {"timestamp":"2026-07-21T01:00:01.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":31,"window_minutes":300,"resets_at":1784685660},"secondary":{"used_percent":8,"window_minutes":10080,"resets_at":1785286860}}}}
+    """.utf8)
+
+    let events = RolloutTailReader.lineEvents(in: line)
+
+    #expect(events.shortTermLimit?.remainingPercent == 69)
+    #expect(events.weeklyLimit?.remainingPercent == 92)
 }
 
 @Test func tailReaderRetriesAnIncompleteFinalLine() throws {

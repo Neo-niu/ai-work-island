@@ -1,39 +1,69 @@
 import AppKit
 import CodexTouchBarCore
+import WidgetKit
+
+private struct WidgetPresentationState: Equatable {
+    let id: String
+    let title: String
+    let detail: String?
+    let status: WorkItemStatus
+    let startedAt: Date?
+    let outputPath: String?
+    let phase: String?
+    let phaseIndex: Int?
+    let phaseCount: Int?
+
+    init(_ item: WorkItem) {
+        id = item.id
+        title = item.title
+        detail = item.detail
+        status = item.status
+        startedAt = item.startedAt
+        outputPath = item.outputPath
+        phase = item.phase
+        phaseIndex = item.phaseIndex
+        phaseCount = item.phaseCount
+    }
+}
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let codexBundleIdentifier = "com.openai.codex"
-    private static let hermesBundleIdentifier = "com.nousresearch.hermes.setup"
+    private static let restoreDashboardNotification = Notification.Name(
+        "dev.kanyun.CodexHermesTouchBar.restoreDashboard"
+    )
     private static let enabledDefaultsKey = "touchBarEnabled"
     private static let alwaysShowDefaultsKey = "touchBarAlwaysShow"
+    private static let desktopPanelVisibleDefaultsKey = "desktopPanelVisible"
+    private static let desktopWidgetModeDefaultsKey = "desktopWidgetMode"
 
     private let scanner = RolloutScanner()
-    private let hermesScanner = HermesStatusScanner()
+    private let automationStatusScanner = AutomationStatusScanner()
     private let companyQuotaScanner = CompanyQuotaScanner()
     private let grouper = ProjectGrouper()
     private let touchBarController = TouchBarController()
+    private let desktopPanelController = DesktopStatusPanelController()
+    private let voiceMemoLauncher = VoiceMemoLauncher()
+    private let recordingHotKey = GlobalRecordingHotKey()
+    private let widgetSnapshotStore = WidgetSnapshotStore()
     private let accessibilityController = CodexAccessibilityController()
-    private var cycler = ThreadCycler()
     private var statusItem: NSStatusItem?
     private var statusMenuItem: NSMenuItem?
     private var enabledMenuItem: NSMenuItem?
     private var alwaysShowMenuItem: NSMenuItem?
+    private var desktopPanelMenuItem: NSMenuItem?
+    private var desktopWidgetModeMenuItem: NSMenuItem?
     private var refreshTimer: Timer?
+    private var scheduledRefreshInterval: TimeInterval?
     private var refreshInFlight = false
     private var latestGroups: [ProjectGroup]?
-    private var latestWeeklyLimit: WeeklyLimitUsage?
-    private var latestHermesStatus = HermesStatus(
-        gatewayRunning: false,
-        connectedPlatforms: 0,
-        runningTasks: 0,
-        blockedTasks: 0,
-        failedTasks: 0
-    )
-    private var latestCompanyQuota: CompanyModelQuota?
     private var latestThreadCount = 0
     private var latestUnreadThreadCount = 0
     private var transientStatus: (message: String, expiresAt: Date)?
+    private var threadStatusCycler = ThreadStatusCycler()
+    private var latestWidgetItems: [WorkItem]?
+    private var latestWidgetPresentation: [WidgetPresentationState]?
+    private var latestHasActiveWork = false
 
     private var isEnabled: Bool {
         get {
@@ -52,6 +82,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set { UserDefaults.standard.set(newValue, forKey: Self.alwaysShowDefaultsKey) }
     }
 
+    private var isDesktopPanelVisible: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: Self.desktopPanelVisibleDefaultsKey) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: Self.desktopPanelVisibleDefaultsKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.desktopPanelVisibleDefaultsKey)
+        }
+    }
+
+    private var isDesktopWidgetMode: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: Self.desktopWidgetModeDefaultsKey) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: Self.desktopWidgetModeDefaultsKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.desktopWidgetModeDefaultsKey)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let runningPIDs = NSRunningApplication.runningApplications(
             withBundleIdentifier: Bundle.main.bundleIdentifier ?? ""
@@ -60,29 +114,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             currentPID: ProcessInfo.processInfo.processIdentifier,
             runningPIDs: runningPIDs
         ) {
+            DistributedNotificationCenter.default().post(
+                name: Self.restoreDashboardNotification,
+                object: nil,
+                userInfo: nil
+            )
             NSApp.terminate(nil)
             return
         }
 
         NSApp.setActivationPolicy(.accessory)
+        // Closing the dashboard hides it only for the current run. A fresh app
+        // launch should always restore the primary task dashboard.
+        isDesktopPanelVisible = true
         configureStatusItem()
         LaunchAtLoginController.registerIfNeeded()
+        recordingHotKey.onPressed = { [weak self] in
+            self?.startVoiceMemoRecording()
+        }
+        do {
+            try recordingHotKey.register()
+        } catch {
+            showTransientStatus(error.localizedDescription, duration: 15)
+        }
 
-        touchBarController.onProjectSelected = { [weak self] group in
-            self?.openNextThread(in: group)
+        touchBarController.onProcessingSelected = { [weak self] in
+            self?.openNextThread(category: .processing)
         }
-        touchBarController.onEffortSelected = { [weak self] choice in
-            self?.applyEffort(choice)
+        touchBarController.onUnreadSelected = { [weak self] in
+            self?.openNextThread(category: .unread)
         }
-        touchBarController.onSpeedSelected = { [weak self] choice in
-            self?.applySpeed(choice)
+        desktopPanelController.onItemSelected = { [weak self] item in
+            self?.openWorkItem(item)
         }
-        touchBarController.onHermesSelected = { [weak self] in
-            self?.openHermes()
+        desktopPanelController.onItemDetailsSelected = { [weak self] item in
+            self?.showWorkItemDetails(item)
         }
-        touchBarController.onCompanyQuotaSelected = { [weak self] in
-            self?.openCompanyQuotaPage()
+        desktopPanelController.onItemOutputSelected = { [weak self] item in
+            self?.openWorkItemOutput(item)
         }
+        desktopPanelController.onVoiceMemoSelected = { [weak self] in
+            self?.startVoiceMemoRecording()
+        }
+        desktopPanelController.onVisibilityChanged = { [weak self] visible in
+            guard let self else { return }
+            self.isDesktopPanelVisible = visible
+            self.desktopPanelMenuItem?.state = visible ? .on : .off
+            self.updateRefreshSchedule()
+        }
+        desktopPanelController.setDisplayMode(isDesktopWidgetMode ? .desktopWidget : .floating)
 
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
@@ -90,16 +170,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSWorkspace.didActivateApplicationNotification,
             object: nil
         )
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(restoreDashboardFromExplicitOpen),
+            name: Self.restoreDashboardNotification,
+            object: nil
+        )
 
         updateRefreshSchedule()
         requestRefresh()
         updatePresentation()
+        if isDesktopPanelVisible {
+            desktopPanelController.show()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        recordingHotKey.unregister()
         touchBarController.dismiss()
+        desktopPanelController.hide()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
+        DistributedNotificationCenter.default().removeObserver(self)
+    }
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let url = urls.first(where: {
+            $0.scheme == WidgetStatusConfiguration.urlScheme
+        }) else {
+            return
+        }
+        if url.host == "record" {
+            startVoiceMemoRecording()
+            return
+        }
+        if url.host == "refresh" {
+            requestRefresh()
+            WidgetCenter.shared.reloadTimelines(ofKind: WidgetStatusConfiguration.kind)
+            showTransientStatus("正在刷新桌面小组件")
+            return
+        }
+        isDesktopPanelVisible = true
+        desktopPanelMenuItem?.state = .on
+        desktopPanelController.show()
+        updateRefreshSchedule()
+        requestRefresh()
     }
 
     private func configureStatusItem() {
@@ -136,6 +251,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alwaysShowMenuItem.state = alwaysShow ? .on : .off
         menu.addItem(alwaysShowMenuItem)
 
+        let desktopPanelMenuItem = NSMenuItem(
+            title: "显示桌面状态面板",
+            action: #selector(toggleDesktopPanel(_:)),
+            keyEquivalent: ""
+        )
+        desktopPanelMenuItem.target = self
+        desktopPanelMenuItem.state = isDesktopPanelVisible ? .on : .off
+        menu.addItem(desktopPanelMenuItem)
+
+        let desktopWidgetModeMenuItem = NSMenuItem(
+            title: "桌面小组件模式（窗口后方）",
+            action: #selector(toggleDesktopWidgetMode(_:)),
+            keyEquivalent: ""
+        )
+        desktopWidgetModeMenuItem.target = self
+        desktopWidgetModeMenuItem.state = isDesktopWidgetMode ? .on : .off
+        menu.addItem(desktopWidgetModeMenuItem)
+
+        let openStatusDirectoryItem = NSMenuItem(
+            title: "打开自动化状态目录",
+            action: #selector(openAutomationStatusDirectory),
+            keyEquivalent: ""
+        )
+        openStatusDirectoryItem.target = self
+        menu.addItem(openStatusDirectoryItem)
+
+        let startVoiceMemoItem = NSMenuItem(
+            title: "开始语音备忘录（全局 ⌥⌘R）",
+            action: #selector(startVoiceMemoFromMenu),
+            keyEquivalent: "r"
+        )
+        startVoiceMemoItem.keyEquivalentModifierMask = [.command, .option]
+        startVoiceMemoItem.target = self
+        menu.addItem(startVoiceMemoItem)
+
         let refreshItem = NSMenuItem(title: "立即刷新", action: #selector(refreshNow), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
@@ -148,15 +298,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openHermesItem.target = self
         menu.addItem(openHermesItem)
 
-        let accessibilityItem = NSMenuItem(
-            title: "启用推理程度控制…",
-            action: #selector(requestAccessibilityAccess),
-            keyEquivalent: ""
-        )
-        accessibilityItem.target = self
-        menu.addItem(accessibilityItem)
-
         menu.addItem(.separator())
+        let restartItem = NSMenuItem(title: "重启应用", action: #selector(restartApplication), keyEquivalent: "")
+        restartItem.target = self
+        menu.addItem(restartItem)
+
         let quitItem = NSMenuItem(title: "退出 Codex Hermes Touch Bar", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -166,6 +312,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.statusMenuItem = statusMenuItem
         self.enabledMenuItem = enabledMenuItem
         self.alwaysShowMenuItem = alwaysShowMenuItem
+        self.desktopPanelMenuItem = desktopPanelMenuItem
+        self.desktopWidgetModeMenuItem = desktopWidgetModeMenuItem
 
         if !touchBarController.isAvailable {
             statusMenuItem.title = "当前系统不支持 Touch Bar 常驻接口"
@@ -180,9 +328,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         refreshInFlight = true
 
-        Task { [weak self, scanner, hermesScanner, companyQuotaScanner, grouper] in
+        Task { [weak self, scanner, automationStatusScanner, companyQuotaScanner, grouper] in
             let snapshot = await scanner.scanSnapshot()
-            let hermesStatus = hermesScanner.scan()
+            let automationResult = automationStatusScanner.scan()
             let companyQuota = await companyQuotaScanner.scanIfNeeded()
             guard let self else {
                 return
@@ -197,9 +345,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             self.apply(
                 groups: groups,
+                shortTermLimit: snapshot.shortTermLimit,
                 weeklyLimit: snapshot.weeklyLimit,
-                hermesStatus: hermesStatus,
-                companyQuota: companyQuota
+                companyQuota: companyQuota,
+                automationResult: automationResult
             )
             self.refreshInFlight = false
         }
@@ -207,9 +356,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func apply(
         groups: [ProjectGroup],
+        shortTermLimit: WeeklyLimitUsage?,
         weeklyLimit: WeeklyLimitUsage?,
-        hermesStatus: HermesStatus,
-        companyQuota: CompanyModelQuota?
+        companyQuota: CompanyModelQuota?,
+        automationResult: AutomationScanResult
     ) {
         touchBarController.update(groups: groups)
         if RefreshPolicy.shouldApply(previous: latestGroups, next: groups) {
@@ -220,34 +370,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             latestUnreadThreadCount = groups.reduce(0) {
                 $0 + $1.threads.filter(\.isUnread).count
             }
-            cycler.retainGroups(Set(groups.map(\.id)))
         }
 
-        latestWeeklyLimit = weeklyLimit
-        touchBarController.showWeeklyLimit(weeklyLimit)
-        latestHermesStatus = hermesStatus
-        touchBarController.showHermesStatus(hermesStatus)
-        latestCompanyQuota = companyQuota
+        touchBarController.showCodexLimits(shortTerm: shortTermLimit, weekly: weeklyLimit)
         touchBarController.showCompanyQuota(companyQuota)
+        let codexItems = WorkStatusHub.codexItems(from: groups)
+        let workItems = WorkStatusHub.merge(codex: codexItems, automation: automationResult.items)
+        let hasActiveWork = workItems.contains { $0.status.isActiveWork }
+        if latestHasActiveWork != hasActiveWork {
+            latestHasActiveWork = hasActiveWork
+            updateRefreshSchedule()
+        }
+        desktopPanelController.update(snapshot: WorkStatusSnapshot(
+            items: workItems,
+            automationIssues: automationResult.issues,
+            codexShortTermLimit: shortTermLimit,
+            codexWeeklyLimit: weeklyLimit,
+            companyQuota: companyQuota
+        ))
+        publishWidgetSnapshotIfNeeded(items: workItems)
         updateStatusText()
     }
 
-    private func updateStatusText() {
-        guard touchBarController.isAvailable else {
-            statusMenuItem?.title = "当前系统不支持 Touch Bar 常驻接口"
-            return
+    private func publishWidgetSnapshotIfNeeded(items: [WorkItem]) {
+        guard latestWidgetItems != items else { return }
+        do {
+            try widgetSnapshotStore.write(WidgetStatusSnapshot(items: items))
+            latestWidgetItems = items
+            let presentation = items.map(WidgetPresentationState.init)
+            if presentation != latestWidgetPresentation {
+                latestWidgetPresentation = presentation
+                WidgetCenter.shared.reloadTimelines(ofKind: WidgetStatusConfiguration.kind)
+            }
+        } catch {
+            showTransientStatus("无法更新系统小组件：\(error.localizedDescription)", duration: 15)
         }
+    }
 
+    private func updateStatusText() {
         if let transientStatus, transientStatus.expiresAt > Date() {
             statusMenuItem?.title = transientStatus.message
             return
         }
         transientStatus = nil
 
-        if latestThreadCount == 0, latestUnreadThreadCount == 0 {
-            statusMenuItem?.title = "处理中 0 · 待查看 0"
-        } else {
-            statusMenuItem?.title = "处理中 \(latestThreadCount) · 待查看 \(latestUnreadThreadCount)"
+        switch (latestThreadCount, latestUnreadThreadCount) {
+        case (0, 0):
+            statusMenuItem?.title = "Codex 空闲"
+        case (_, 0):
+            statusMenuItem?.title = "处理中 \(latestThreadCount)"
+        case (0, _):
+            statusMenuItem?.title = "待读 \(latestUnreadThreadCount)"
+        default:
+            statusMenuItem?.title = "处理中 \(latestThreadCount) · 待读 \(latestUnreadThreadCount)"
         }
     }
 
@@ -263,22 +438,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.codexBundleIdentifier
     }
 
-    private var isSupportedAppFrontmost: Bool {
-        guard let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return false }
-        return bundleID == Self.codexBundleIdentifier || bundleID == Self.hermesBundleIdentifier
-    }
-
     private var shouldPresentDashboard: Bool {
-        isEnabled && (alwaysShow || isSupportedAppFrontmost)
+        isEnabled && (alwaysShow || isCodexFrontmost)
     }
 
     private func updateRefreshSchedule() {
+        let shouldRefresh = shouldPresentDashboard || isDesktopPanelVisible
+        let interval = RefreshPolicy.pollInterval(
+            isDashboardVisible: shouldRefresh,
+            hasActiveWork: latestHasActiveWork
+        )
+        guard scheduledRefreshInterval != interval else { return }
         refreshTimer?.invalidate()
         refreshTimer = nil
-
-        guard let interval = RefreshPolicy.pollInterval(isDashboardVisible: shouldPresentDashboard) else {
-            return
-        }
+        scheduledRefreshInterval = interval
         let timer = Timer(
             timeInterval: interval,
             target: self,
@@ -290,38 +463,110 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshTimer = timer
     }
 
-    private func openNextThread(in group: ProjectGroup) {
-        guard let thread = cycler.nextThread(in: group),
-              let url = URL(string: "codex://threads/\(thread.id)") else {
+    private func openNextThread(category: ThreadStatusCategory) {
+        guard let latestGroups,
+              let thread = threadStatusCycler.nextThread(in: latestGroups, category: category) else {
+            showTransientStatus(category == .processing ? "当前没有处理中的会话" : "当前没有待读会话")
             return
         }
-        NSWorkspace.shared.open(url)
+        openThread(
+            thread,
+            successMessage: category == .processing ? "已打开处理中的会话" : "已打开待读会话"
+        )
     }
 
-    private func applyEffort(_ choice: EffortChoice) {
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await accessibilityController.apply(effort: choice)
-                touchBarController.showSelectedEffort(choice)
-                showTransientStatus("推理程度已设为\(choice.shortTitle)")
-            } catch {
-                showSettingError(error)
-            }
+    private func openThread(
+        _ thread: ActiveThread,
+        successMessage: String
+    ) {
+        guard let url = URL(string: "codex://threads/\(thread.id)") else {
+            showTransientStatus("无法生成目标会话链接")
+            return
+        }
+        guard NSWorkspace.shared.open(url) else {
+            showTransientStatus("Codex 未接受会话跳转")
+            return
+        }
+        showTransientStatus(successMessage)
+    }
+
+    private func openWorkItem(_ item: WorkItem) {
+        if item.status.requiresAttention {
+            showWorkItemIssue(item)
+            return
+        }
+        if item.id.hasPrefix("codex:"),
+           let thread = latestGroups?.flatMap(\.threads).first(where: {
+               "codex:\($0.id)" == item.id
+           }) {
+            openThread(
+                thread,
+                successMessage: "已打开 Codex 会话"
+            )
+            return
+        }
+        if let rawURL = item.openURL, let url = URL(string: rawURL) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        if let outputPath = item.outputPath {
+            NSWorkspace.shared.open(URL(fileURLWithPath: outputPath))
+            return
+        }
+        showTransientStatus("该任务没有可打开的产出")
+    }
+
+    private func showWorkItemIssue(_ item: WorkItem) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "\(item.displayTitle) · \(item.status == .stale ? "状态失联" : "运行异常")"
+        alert.informativeText = item.displayDetail.isEmpty
+            ? "没有提供更多异常信息。"
+            : item.displayDetail
+        alert.addButton(withTitle: "关闭")
+
+        let destination: URL?
+        let actionTitle: String?
+        if let rawURL = item.openURL, let url = URL(string: rawURL) {
+            destination = url
+            actionTitle = "打开详情"
+        } else if let outputPath = item.outputPath {
+            destination = URL(fileURLWithPath: outputPath)
+            actionTitle = "打开产出"
+        } else {
+            destination = nil
+            actionTitle = nil
+        }
+        if let actionTitle {
+            alert.addButton(withTitle: actionTitle)
+        }
+
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        if alert.runModal() == .alertSecondButtonReturn, let destination {
+            NSWorkspace.shared.open(destination)
         }
     }
 
-    private func applySpeed(_ choice: SpeedChoice) {
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await accessibilityController.apply(speed: choice)
-                touchBarController.showSelectedSpeed(choice)
-                showTransientStatus("响应速度已设为\(choice.title)")
-            } catch {
-                showSettingError(error)
-            }
+    private func showWorkItemDetails(_ item: WorkItem) {
+        if item.status.requiresAttention {
+            showWorkItemIssue(item)
+            return
         }
+        let alert = NSAlert()
+        alert.messageText = item.displayTitle
+        let phase = item.phase.map { "当前阶段：\($0)\n" } ?? ""
+        alert.informativeText = "\(phase)\(item.displayDetail)"
+        alert.addButton(withTitle: "关闭")
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        alert.runModal()
+    }
+
+    private func openWorkItemOutput(_ item: WorkItem) {
+        guard let outputPath = item.outputPath else {
+            showTransientStatus("该任务没有可打开的产出")
+            return
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: outputPath))
     }
 
     private func showSettingError(_ error: Error) {
@@ -333,6 +578,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showTransientStatus(_ message: String, duration: TimeInterval = 6) {
         transientStatus = (message, Date().addingTimeInterval(duration))
         statusMenuItem?.title = message
+    }
+
+    private func startVoiceMemoRecording() {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await voiceMemoLauncher.start()
+                showTransientStatus("录音已开始；完成后将自动转写")
+            } catch {
+                if case VoiceMemoLauncher.LauncherError.accessibilityRequired = error {
+                    _ = accessibilityController.requestAccessibilityAccess()
+                }
+                showSettingError(error)
+            }
+        }
+    }
+
+    @objc private func startVoiceMemoFromMenu() {
+        startVoiceMemoRecording()
     }
 
     @objc private func frontmostApplicationChanged(_ notification: Notification) {
@@ -350,6 +614,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func refreshNow() {
         requestRefresh()
         updatePresentation()
+    }
+
+    @objc private func restoreDashboardFromExplicitOpen() {
+        isDesktopPanelVisible = true
+        desktopPanelMenuItem?.state = .on
+        desktopPanelController.show()
+        updateRefreshSchedule()
+        requestRefresh()
+        if isEnabled, touchBarController.isAvailable {
+            _ = touchBarController.restorePresentation()
+        }
     }
 
     @objc private func toggleEnabled(_ sender: NSMenuItem) {
@@ -376,6 +651,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updatePresentation()
     }
 
+    @objc private func toggleDesktopPanel(_ sender: NSMenuItem) {
+        isDesktopPanelVisible.toggle()
+        sender.state = isDesktopPanelVisible ? .on : .off
+        if isDesktopPanelVisible {
+            desktopPanelController.show()
+            requestRefresh()
+        } else {
+            desktopPanelController.hide()
+        }
+        updateRefreshSchedule()
+    }
+
+    @objc private func toggleDesktopWidgetMode(_ sender: NSMenuItem) {
+        isDesktopWidgetMode.toggle()
+        sender.state = isDesktopWidgetMode ? .on : .off
+        desktopPanelController.setDisplayMode(isDesktopWidgetMode ? .desktopWidget : .floating)
+        if isDesktopPanelVisible {
+            desktopPanelController.show()
+        }
+    }
+
+    @objc private func openAutomationStatusDirectory() {
+        let directory = automationStatusScanner.statusDirectory
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            NSWorkspace.shared.open(directory)
+        } catch {
+            showTransientStatus("无法打开状态目录：\(error.localizedDescription)", duration: 15)
+        }
+    }
+
     @objc private func openCodex() {
         NSWorkspace.shared.openApplication(
             at: URL(fileURLWithPath: "/Applications/ChatGPT.app"),
@@ -390,18 +699,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
-    @objc private func openCompanyQuotaPage() {
-        NSWorkspace.shared.open(URL(string: "https://model.zhenguanyu.com/console/usage/dashboard")!)
-    }
+    @objc private func restartApplication() {
+        let bundlePath = Bundle.main.bundlePath
+        let relauncher = Process()
+        relauncher.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relauncher.arguments = [
+            "-c",
+            "sleep 0.5; exec /usr/bin/open -n \"$1\"",
+            "codex-touch-bar-relauncher",
+            bundlePath,
+        ]
 
-    @objc private func requestAccessibilityAccess() {
-        if accessibilityController.requestAccessibilityAccess() {
-            showTransientStatus("辅助功能权限已启用")
-        } else {
-            showTransientStatus(
-                "请在系统设置 → 隐私与安全性 → 辅助功能中启用本应用",
-                duration: 15
-            )
+        do {
+            try relauncher.run()
+            NSApp.terminate(nil)
+        } catch {
+            showTransientStatus("重启失败：\(error.localizedDescription)", duration: 15)
+            NSSound.beep()
         }
     }
 

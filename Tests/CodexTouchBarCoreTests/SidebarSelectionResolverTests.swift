@@ -29,7 +29,7 @@ import Testing
         SidebarSelectionRow.project(name: "codex_touchbar", minY: 451, height: 30),
     ]
 
-    #expect(SidebarSelectionResolver.projectName(from: rows) == "Görevler")
+    #expect(SidebarSelectionResolver.projectName(from: rows) == "任务")
 }
 
 @Test func ignoresOffscreenZeroHeightRows() {
