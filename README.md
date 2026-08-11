@@ -1,16 +1,15 @@
-# Codex Hermes 工作状态中枢
+# AI 工作岛
 
-用同一个 macOS 常驻应用，在桌面和 Touch Bar 查看 Codex 与本地自动化程序状态。
+用一个悬浮的 macOS AI 工作入口，继续 Codex 任务、新建项目会话，并在桌面面板和 Touch Bar 查看 Codex 与本地自动化状态。
 
 ## 当前能力
 
 - Codex：只显示处理中和待读结果；两者均为零时显示“Codex 空闲”。点击“处理中”或“待读”会将 Codex 切到前台，通过主窗口内搜索循环打开对应状态的会话。
-- 桌面面板：默认无标题栏控件并停留在普通窗口后方，跨桌面空间显示 Codex、自动化任务及 Codex/公司剩余额度；优先展示等待确认、异常和失联任务，点击可打开 Codex 会话或自动化产出。可缩小为黑色迷你灵动岛胶囊，以蓝、橙、红、绿状态点和简短文字显示运行、等待、异常与完成；运行中有双层脉冲、缓慢光带和沿边流光，状态切换有文字推入、色彩扩散、弹性形变和掠光，缩小/恢复也使用连续过渡。所有持续动效遵守系统“减少动态效果”。胶囊可拖动，点击只恢复面板，不自动打开 Finder 或其他外部目标。菜单也可切换为始终置顶浮窗。
-- macOS 原生小组件：提供中号和大号两种尺寸，显示 Codex 与自动化的当前步骤、运行时长、待处理数量和最新产出；从系统小组件图库搜索“AI 工作状态”添加，点击可回到状态面板。
-- 语音备忘录入口：点击小组件或桌面面板的“录音”，打开苹果“语音备忘录”并以 `Command-N` 立即开始；完成或关闭后，由既有自动会议纪要服务发现并转写。当前服务仅处理 30 秒以上录音。
+- 桌面面板：默认无标题栏控件并停留在普通窗口后方，跨桌面空间显示 Codex 与自动化任务；等待确认、异常和失联任务优先。有效额度以轻量文本显示，公司额度不可用时不占空间。点击任务卡打开任务，悬停操作只保留“产出”和“详情”。
+- 浮窗对话：每张 Codex 项目卡片显示最近一轮 AI 结果，并提供独立输入框；在哪张卡片输入，就按该卡片 thread ID 继续对应会话。标题栏 `＋` 按钮按需完成“选择项目—输入首条指令—创建会话”。
+- 悬浮胶囊：以蓝、橙、红、绿状态点和简短文字显示运行、等待、异常与完成；支持跨空间拖动、悬停展开和自动收起，点击只恢复面板。所有持续动效遵守系统“减少动态效果”。
 - 全局录音快捷键：在任何应用中按 `Option-Command-R`，直接调用同一录音入口；使用系统全局快捷键注册，不监听或保存其他按键。
-- 自适应刷新：状态面板可见时每 1 秒、后台有运行任务时每 3 秒、后台空闲时每 30 秒采集；仅在状态、步骤或产出变化时刷新小组件。运行中刷新周期为 5 分钟、待处理为 10 分钟、空闲为 30 分钟。
-- 刷新保真：小组件显示最后更新时间；运行快照超过 2 分钟显示“数据延迟”、超过 10 分钟显示“状态未更新”，不再将旧数据误报为空闲。右上角 `↻` 可手动请求刷新。
+- 自适应刷新：状态面板可见时每 1 秒、后台有运行任务时每 3 秒、后台空闲时每 30 秒采集。
 - 桌面刷新：轮询时间或任务内部更新时间变化不会重建任务列表；只有标题、状态、阶段、分组等可见内容变化才更新界面，额度独立原位刷新。
 - 等待处理：`等待你` 分组固定置顶并始终展开，不提供折叠入口；组内任务逐项显示，优先占用面板的 7 个可见位置。
 - 桌面面板界面：使用中性自适应玻璃背景和低对比卡片，减少桌面强调色污染；任务标题自动清理附件名、Markdown 标题和换行，固定为标题/步骤两行，避免内容溢出或撑宽窗口。
@@ -36,26 +35,25 @@
 生成的应用：
 
 ```text
-dist/Codex Hermes Touch Bar.app
+dist/AI 工作岛.app
 ```
 
-验证运行时会同时安装到 `/Applications/Codex Hermes Touch Bar.app`。源码仍保存在 iCloud，应用从本机“应用程序”目录运行，避免 iCloud 修改签名元数据。
+验证运行时会同时安装到 `/Applications/AI 工作岛.app`。源码仍保存在 iCloud，应用从本机“应用程序”目录运行，避免 iCloud 修改签名元数据。
 
 诊断数据源：
 
 ```bash
-dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose
-dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose-hermes
-dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose-company-quota
-dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose-automation
-dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose-widget
+dist/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose
+dist/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose-hermes
+dist/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose-company-quota
+dist/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose-automation
 ```
 
 ## 数据来源
 
 - Codex：`~/.codex/state_5.sqlite`、近期 rollout JSONL、未读线程状态。
 - 公司模型平台：Edge 中 `model.zhenguanyu.com` 的现有登录态；不读取或保存 Cookie。
-- 自动化程序：`~/Library/Application Support/Codex Hermes Touch Bar/automation-status/*.json`。
+- 自动化程序：`~/Library/Application Support/Codex Hermes Touch Bar/automation-status/*.json`。该目录作为兼容性技术路径保留，不影响应用显示名。
 
 Hermes 本地状态不再参与常驻刷新；`--diagnose-hermes` 仅保留为手动诊断命令。
 

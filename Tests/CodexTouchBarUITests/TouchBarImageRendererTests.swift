@@ -131,8 +131,8 @@ import Testing
     #expect(DesktopPanelLayout.contentSize(visibleItemCount: 0).width == 372)
     #expect(DesktopPanelLayout.contentSize(visibleItemCount: 1).width == 372)
     #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7).width == 372)
-    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7).height == 588)
-    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7, sectionCount: 4).height == 620)
+    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7).height == 578)
+    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7, sectionCount: 4).height == 666)
 }
 
 @Test func floatingStatusButtonUsesACompactPillHitTarget() {
@@ -191,7 +191,7 @@ import Testing
     #expect(completedPresentation.tintColor == .systemGreen)
     #expect(idlePresentation.displayText == "空闲")
     #expect(idlePresentation.tintColor == .secondaryLabelColor)
-    #expect(activePresentation.accessibilityLabel == "恢复 AI 工作状态；当前1 运行")
+    #expect(activePresentation.accessibilityLabel == "恢复 AI 工作岛；当前1 运行")
 }
 
 @Test func floatingStatusButtonMotionHonorsReduceMotionAndMeaningfulChanges() {
@@ -213,6 +213,44 @@ import Testing
     #expect(DesktopFloatingButtonMotion.transitionDuration >= 0.55)
     #expect(DesktopFloatingButtonMotion.ambientCycleDuration > DesktopFloatingButtonMotion.transitionDuration)
     #expect(DesktopFloatingButtonMotion.borderCycleDuration > 1)
+}
+
+@MainActor
+@Test func floatingStatusButtonRestoresThePanelOnHover() {
+    let view = FloatingStatusButtonView(frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.size))
+    var didRequestRestore = false
+    view.onHoverEntered = { didRequestRestore = true }
+
+    view.handleHoverEntered()
+
+    #expect(didRequestRestore)
+}
+
+@Test func restoredPanelCannotBeHiddenByAStaleMinimizeAnimation() {
+    #expect(DesktopFloatingPanelTransition.shouldFinishMinimizing(isMinimizedToFloatingButton: true))
+    #expect(!DesktopFloatingPanelTransition.shouldFinishMinimizing(isMinimizedToFloatingButton: false))
+}
+
+@Test func hoverExpandedPanelCollapsesOnlyAfterThePointerLeaves() {
+    #expect(DesktopFloatingHoverBehavior.collapseDelay == 0.5)
+    #expect(!DesktopFloatingHoverBehavior.shouldAutoCollapse(isHoverExpanded: false, isPanelHovered: false))
+    #expect(!DesktopFloatingHoverBehavior.shouldAutoCollapse(isHoverExpanded: true, isPanelHovered: true))
+    #expect(DesktopFloatingHoverBehavior.shouldAutoCollapse(isHoverExpanded: true, isPanelHovered: false))
+}
+
+@Test func hoverExpansionFloatsAboveAFullScreenWindowWithoutChangingTheSavedMode() {
+    #expect(!DesktopPanelWindowPolicy.floatsAboveFullScreen(
+        mode: .background,
+        hoverExpanded: false
+    ))
+    #expect(DesktopPanelWindowPolicy.floatsAboveFullScreen(
+        mode: .background,
+        hoverExpanded: true
+    ))
+    #expect(DesktopPanelWindowPolicy.floatsAboveFullScreen(
+        mode: .floating,
+        hoverExpanded: false
+    ))
 }
 
 @MainActor
@@ -270,18 +308,27 @@ import Testing
 
     let first = DesktopPanelContentSignature(
         snapshot: WorkStatusSnapshot(items: [firstItem], automationIssues: []),
-        layoutTokens: tokens
+        layoutTokens: tokens,
+        codexResults: ["codex:1": "上轮完成"]
     )
     let refreshOnly = DesktopPanelContentSignature(
         snapshot: WorkStatusSnapshot(items: [refreshedItem], automationIssues: []),
-        layoutTokens: tokens
+        layoutTokens: tokens,
+        codexResults: ["codex:1": "上轮完成"]
+    )
+    let resultChanged = DesktopPanelContentSignature(
+        snapshot: WorkStatusSnapshot(items: [refreshedItem], automationIssues: []),
+        layoutTokens: tokens,
+        codexResults: ["codex:1": "新的上轮结果"]
     )
     let changed = DesktopPanelContentSignature(
         snapshot: WorkStatusSnapshot(items: [changedItem], automationIssues: []),
-        layoutTokens: ["section:needsUser:true", "codex:1"]
+        layoutTokens: ["section:needsUser:true", "codex:1"],
+        codexResults: ["codex:1": "不同结果"]
     )
 
     #expect(first == refreshOnly)
+    #expect(first != resultChanged)
     #expect(first != changed)
 }
 

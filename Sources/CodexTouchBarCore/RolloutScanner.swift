@@ -21,6 +21,7 @@ public actor RolloutScanner {
         let task: RolloutTaskEvent?
         let shortTermLimit: WeeklyLimitUsage?
         let weeklyLimit: WeeklyLimitUsage?
+        let assistantResult: String?
     }
 
     private struct GlobalStateValues {
@@ -148,6 +149,10 @@ public actor RolloutScanner {
                 let activeRecords = records.filter(isRecentlyActive)
                 let activeStartedAt = activeRecords.map(\.thread.startedAt).min()
                 let isUnread = activeStartedAt == nil && unreadThreadIDs.contains(root.id)
+                let lastAssistantResult = records
+                    .filter { $0.thread.id == root.id && $0.thread.lastAssistantResult != nil }
+                    .max { $0.thread.updatedAt < $1.thread.updatedAt }?
+                    .thread.lastAssistantResult
 
                 guard activeStartedAt != nil || isUnread else {
                     return nil
@@ -160,7 +165,8 @@ public actor RolloutScanner {
                     updatedAt: root.updatedAt,
                     projectRecencyAt: root.projectRecencyAt,
                     isActive: activeStartedAt != nil,
-                    isUnread: isUnread
+                    isUnread: isUnread,
+                    lastAssistantResult: lastAssistantResult
                 )
             }
         } else {
@@ -193,7 +199,8 @@ public actor RolloutScanner {
                     updatedAt: record.thread.updatedAt,
                     projectRecencyAt: record.thread.projectRecencyAt,
                     isActive: isActive,
-                    isUnread: isUnread
+                    isUnread: isUnread,
+                    lastAssistantResult: record.thread.lastAssistantResult
                 )
                 let existing = visibleThreadsByID[record.thread.id]
                 if existing == nil || visibleThread.updatedAt > existing!.updatedAt {
@@ -383,7 +390,8 @@ public actor RolloutScanner {
                 cwd: record.thread.cwd,
                 startedAt: startedAt,
                 updatedAt: updatedAt,
-                isActive: isActive
+                isActive: isActive,
+                lastAssistantResult: update.latestAssistantResult ?? record.thread.lastAssistantResult
             ),
             isActive: isActive,
             shortTermLimit: update.latestShortTermLimit ?? record.shortTermLimit,
@@ -406,7 +414,8 @@ public actor RolloutScanner {
             cwd: metadata.cwd,
             startedAt: activeStartedAt ?? updatedAt,
             updatedAt: updatedAt,
-            isActive: activeStartedAt != nil
+            isActive: activeStartedAt != nil,
+            lastAssistantResult: latestEvents.assistantResult
         )
         return RolloutRecord(
             thread: thread,
@@ -568,7 +577,12 @@ public actor RolloutScanner {
     private func latestRolloutEvents(at url: URL) -> LatestRolloutEvents {
         guard let handle = try? FileHandle(forReadingFrom: url),
               let fileSize = try? handle.seekToEnd() else {
-            return LatestRolloutEvents(task: nil, shortTermLimit: nil, weeklyLimit: nil)
+            return LatestRolloutEvents(
+                task: nil,
+                shortTermLimit: nil,
+                weeklyLimit: nil,
+                assistantResult: nil
+            )
         }
         defer { try? handle.close() }
 
@@ -579,6 +593,7 @@ public actor RolloutScanner {
         var latestTask: RolloutTaskEvent?
         var latestShortTermLimit: WeeklyLimitUsage?
         var latestWeeklyLimit: WeeklyLimitUsage?
+        var latestAssistantResult: String?
 
         while position > 0 {
             let readStart = position > chunkSize ? position - chunkSize : 0
@@ -589,7 +604,8 @@ public actor RolloutScanner {
                     return LatestRolloutEvents(
                         task: latestTask,
                         shortTermLimit: latestShortTermLimit,
-                        weeklyLimit: latestWeeklyLimit
+                        weeklyLimit: latestWeeklyLimit,
+                        assistantResult: latestAssistantResult
                     )
                 }
 
@@ -608,11 +624,17 @@ public actor RolloutScanner {
                     latestTask = latestTask ?? events.task
                     latestShortTermLimit = latestShortTermLimit ?? events.shortTermLimit
                     latestWeeklyLimit = latestWeeklyLimit ?? events.weeklyLimit
-                    if latestTask != nil, latestShortTermLimit != nil, latestWeeklyLimit != nil {
+                    latestAssistantResult = latestAssistantResult
+                        ?? RolloutTailReader.assistantResult(in: Data(line))
+                    if latestTask != nil,
+                       latestShortTermLimit != nil,
+                       latestWeeklyLimit != nil,
+                       latestAssistantResult != nil {
                         return LatestRolloutEvents(
                             task: latestTask,
                             shortTermLimit: latestShortTermLimit,
-                            weeklyLimit: latestWeeklyLimit
+                            weeklyLimit: latestWeeklyLimit,
+                            assistantResult: latestAssistantResult
                         )
                     }
                 }
@@ -620,7 +642,8 @@ public actor RolloutScanner {
                 return LatestRolloutEvents(
                     task: latestTask,
                     shortTermLimit: latestShortTermLimit,
-                    weeklyLimit: latestWeeklyLimit
+                    weeklyLimit: latestWeeklyLimit,
+                    assistantResult: latestAssistantResult
                 )
             }
             position = readStart
@@ -630,11 +653,14 @@ public actor RolloutScanner {
             latestTask = latestTask ?? events.task
             latestShortTermLimit = latestShortTermLimit ?? events.shortTermLimit
             latestWeeklyLimit = latestWeeklyLimit ?? events.weeklyLimit
+            latestAssistantResult = latestAssistantResult
+                ?? RolloutTailReader.assistantResult(in: leadingFragment)
         }
         return LatestRolloutEvents(
             task: latestTask,
             shortTermLimit: latestShortTermLimit,
-            weeklyLimit: latestWeeklyLimit
+            weeklyLimit: latestWeeklyLimit,
+            assistantResult: latestAssistantResult
         )
     }
 

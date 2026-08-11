@@ -77,23 +77,6 @@ private func runAutomationDiagnostics() {
     exit(result.issues.isEmpty ? EXIT_SUCCESS : EXIT_FAILURE)
 }
 
-private func runWidgetDiagnostics() {
-    let store = WidgetSnapshotStore()
-    print("Widget snapshot\t\(store.snapshotURL.path)")
-    do {
-        let snapshot = try store.read()
-        print("Widget tasks\t\(snapshot.items.count)")
-        print("Widget refreshed\t\(snapshot.refreshedAt.ISO8601Format())")
-        for item in snapshot.items {
-            print("\(item.status.rawValue)\t\(item.source)\t\(item.title)")
-        }
-        exit(EXIT_SUCCESS)
-    } catch {
-        print("Widget snapshot unavailable\t\(error.localizedDescription)")
-        exit(EXIT_FAILURE)
-    }
-}
-
 private func runCompanyQuotaDiagnostics() {
     let scanner = CompanyQuotaScanner()
     Task {
@@ -167,8 +150,6 @@ case .diagnoseHermes:
     runHermesDiagnostics()
 case .diagnoseAutomation:
     runAutomationDiagnostics()
-case .diagnoseWidget:
-    runWidgetDiagnostics()
 case .diagnoseCompanyQuota:
     runCompanyQuotaDiagnostics()
 case let .diagnoseEffort(rawValue):

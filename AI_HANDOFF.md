@@ -2,7 +2,7 @@
 
 ## 目的
 
-将 Codex 与本地自动化程序汇总为一个状态中枢，并通过桌面面板、macOS 原生小组件和 Touch Bar 三个出口减少切窗口检查。
+将 Codex 与本地自动化程序汇总为一个状态中枢，并通过桌面面板、悬浮胶囊和 Touch Bar 减少切窗口检查。
 
 ## 背景
 
@@ -11,14 +11,15 @@
 ## 当前实现
 
 - Swift 6 + AppKit。
+- 用户可见名称统一为“AI 工作岛”，安装路径为 `/Applications/AI 工作岛.app`。为保留既有设置、辅助功能授权和自动化链路，Bundle ID、可执行文件名及 `~/Library/Application Support/Codex Hermes Touch Bar/` 兼容数据目录不改名。
 - `WorkStatusHub` 将 Codex 线程与自动化任务统一为 `WorkItem`；桌面面板和 Touch Bar 继续各自按信息密度展示。
-- `DesktopStatusPanelController` 提供默认可见、跨桌面空间、可移动的桌面小组件；默认位于普通窗口后方并隐藏标题栏控件，可从菜单切换为始终置顶浮窗。顶部显示 Codex/公司剩余额度，最多展示 7 项任务，等待确认、异常和失联优先。
-- 桌面面板标题栏内提供“缩小为悬浮按钮”；收起后显示 108×38pt、跨空间、可拖动的黑色迷你灵动岛胶囊，外层窗口使用 120×50pt 透明动画画布。运行态使用状态点呼吸、外圈扩散、背景光带和无缝旋转渐变描边；状态变化使用文字推入、状态点弹跳、色环扩散、胶囊弹性和边框闪光；缩小与恢复使用窗口交叉淡化及胶囊弹簧进出。悬停与按压保留缩放反馈，全部动效遵守系统“减少动态效果”。点击胶囊只恢复面板，不打开最近完成任务的 `openURL`、`outputPath` 或 Finder；外部目标必须由任务卡上的明确操作打开。
+- `DesktopStatusPanelController` 提供跨桌面空间、可移动的桌面面板；默认位于普通窗口后方并隐藏标题栏控件，可从菜单切换为始终置顶浮窗。最多展示 7 项任务，等待确认、异常和失联优先。Codex 额度只在有数据时显示，公司额度不可用时隐藏。
+- 桌面面板内置项目卡片对话：每张可见 Codex 卡片都有独立输入框，发送时按该卡片稳定 thread ID 续接对应会话；卡片从 rollout 只读提取最近一次 `final_answer`，去除 Markdown/记忆引用并压缩为单行“上轮”摘要。标题栏 `＋` 按需打开目录选择器和首条指令弹窗。桌面端已有任务通过 `~/.codex/ipc/ipc.sock` 的 thread-follower 通道发送；新会话通过 `codex app-server --stdio` 的 `thread/start` 与 `turn/start` 实现。最近结果只保留在当前进程内存，不额外持久化 Token、Cookie 或对话正文。
+- 桌面面板不再提供“缩小为悬浮按钮”入口，应用启动时默认显示 108×38pt、跨空间、可拖动的迷你灵动岛胶囊，外层窗口使用 120×50pt 透明动画画布。运行态使用状态点呼吸、外圈扩散、背景光带和无缝旋转渐变描边；状态变化使用文字推入、状态点弹跳、色环扩散、胶囊弹性和边框闪光；缩小与恢复使用窗口交叉淡化及胶囊弹簧进出。悬停与按压保留缩放反馈，全部动效遵守系统“减少动态效果”。点击胶囊只恢复面板，不打开最近完成任务的 `openURL`、`outputPath` 或 Finder；外部目标必须由任务卡上的明确操作打开。
 - `等待你` 分组固定排在所有分组之前、始终展开且不能折叠；其中的任务逐条显示并可占满 7 个可见位置，不与运行中或最近完成任务合并。
 - 桌面面板通过 `DesktopPanelContentSignature` 忽略仅刷新时间或任务 `updatedAt` 变化的轮询；额度使用独立摘要视图原位更新，不重建任务行。标题、详情、状态、阶段、按钮目标或分组确实变化时才刷新任务内容。
-- `CodexStatusWidget` 是 WidgetKit 原生扩展，支持中号和大号；主应用将脱敏后的 `WorkItem` 快照写入扩展沙盒，并触发 timeline 刷新。SwiftPM 扩展入口通过一次性 bootstrap 进入 `NSExtensionMain`，避免 descriptor 查询提前退出。
 - `AutomationStatusScanner` 只读 `~/Library/Application Support/Codex Hermes Touch Bar/automation-status/*.json`；运行状态默认 30 分钟未更新转为失联，可由 `staleAfterSeconds` 覆盖或设 0 关闭。
-- 菜单可显示/隐藏桌面面板、打开自动化状态目录；点击 Codex 项打开对应会话，点击自动化项打开 `openURL` 或 `outputPath`。
+- 菜单保留 Touch Bar/面板显示方式、自动化状态目录、全局录音、重启和退出；任务卡负责打开 Codex 会话或自动化产出。
 - `RolloutScanner` 读取 Codex 本地状态。
 - `HermesStatusScanner` 仅供 `--diagnose-hermes` 手动诊断，常驻刷新不再读取 Hermes 状态。
 - `CompanyQuotaScanner` 每 60 秒通过 Edge 页面内同源请求读取 `/api/v1/users/self`，不提取 Cookie。
@@ -33,7 +34,7 @@
 - 公司额度扫描通过后台 `reload` 唤醒 Edge 休眠标签，不改变 `active tab index`；读取失败时保留上次成功缓存，避免用户浏览时闪切到额度页。
 - App 默认仅在 Codex 前台时展开；菜单可切换“始终显示（所有应用）”，状态持久化在 `touchBarAlwaysShow`。
 - 菜单提供“重启应用”：先启动延迟 0.5 秒的本地重开任务，再退出当前进程，避免单实例保护拦截新实例。
-- Touch Bar 被关闭按钮收起后，再次打开 `/Applications/Codex Hermes Touch Bar.app` 会通知既有后台进程强制恢复仪表盘，不再被单实例保护静默吞掉。
+- Touch Bar 被关闭按钮收起后，再次打开 `/Applications/AI 工作岛.app` 会通知既有后台进程强制恢复仪表盘，不再被单实例保护静默吞掉。
 - “处理中”和“待读”是两个独立点击目标；点击后按各自列表循环，通过 Codex 主窗口的“搜索聊天”命令按精确标题打开会话。不要恢复外部 `codex://threads/<id>` 路径：深链会广播到隐藏的 avatar overlay，产生错误的“会话不存在”提示。
 - App 图标母版位于 `Resources/AppIcon-master.png`，构建使用 `Resources/AppIcon.icns`；视觉采用深色圆角设备、横向 Touch Bar 光带与状态脉冲，不包含 Apple 商标。
 - 构建目录默认放 `/tmp`，避免 iCloud 路径中的 SwiftPM 锁竞争。
@@ -43,6 +44,17 @@
 
 ## 最近回归
 
+- 2026-08-11：修复全屏应用内悬停胶囊后面板消失。背景模式下，胶囊展开期间主面板临时使用 `.floating` 层级与 `.fullScreenAuxiliary`，收起完成后恢复桌面图标层级；减少动态效果路径同步切换，旧缩小动画 completion 不会覆盖重新展开状态。94 项 Swift 测试、构建安装、严格签名和进程通过；真实 Edge 全屏窗口内悬停胶囊后，窗口从 120×50pt 展开为 372×290pt，截图确认完整面板位于全屏页面上方，测试后 Edge 已恢复非全屏状态。
+- 2026-08-11：完成应用精简。移除 WidgetKit 扩展、Widget 快照/URL/诊断/构建签名链路；桌面面板标题栏改为按需新建会话，删除常驻新会话输入卡和面板录音入口；公司额度无数据时隐藏，额度区改为轻量文本；任务卡整卡点击负责打开任务，悬停只保留产出和详情；页脚只在状态文件异常时出现；菜单移除立即刷新、打开 Codex、打开 Hermes，并将窗口后方模式改名为“置于普通窗口后方”。93 项 Swift 测试、脚本语法、`git diff --check`、构建安装、严格签名、进程、登录项和真实自动化诊断通过；安装包内及 plug-in 注册表均无 Widget；安装版截图回读确认面板高度由原约 425pt 收至 290pt、公司额度无数据时不占位、标题栏仅保留状态与新建按钮。
+- 2026-08-11：浮窗对话改为卡片定向续接。每张 Codex 项目/会话卡片内显示“上轮”短结果和“继续该项目”输入框，发送严格绑定卡片 thread ID；顶部移除“当前任务”选择，只保留“新建会话”，选择项目后才启用首条指令输入。`RolloutTailReader` 仅接受 final answer、过滤 commentary，去除 Markdown 与 `<oai-mem-citation>` 后限制 120 字；结果只进入内存展示，Widget 快照继续不含对话正文。97 项 Swift 测试、构建安装、严格签名和进程启动通过；安装版辅助功能树和截图回读确认 372pt 固定宽度、卡片内结果/输入/发送入口以及项目目录选择器，未向真实任务发送测试指令。
+- 2026-08-11：应用正式更名为“AI 工作岛”；应用包、菜单退出项、桌面面板、悬浮胶囊辅助功能标签、Widget 图库名、URL 类型显示名、App Server 客户端标题、README 与验证脚本统一改名。Bundle ID、URL Scheme、二进制名和自动化数据目录作为兼容性标识保留。96 项 Swift 测试、构建安装、严格签名、进程、登录项、Widget 注册和自动化诊断通过；安装版辅助功能树与截图回读应用名、窗口标题和胶囊标签均为“AI 工作岛”。旧名称的安装包和 `dist` 构建包已移动到废纸篓，可恢复。
+- 2026-08-11：桌面浮窗新增“当前任务 / 新建会话”与指令输入区。默认续接最近更新的运行任务；新建时选择项目目录，首条指令创建会话，后续指令通过同一 thread 继续。App Server 端到端实测 `thread/start → turn/start → completed` 返回 `OK`，再以 `thread/resume → turn/start` 返回 `RESUMED`；桌面运行任务回读确认独立 App Server 会被 `active writer` 拒绝，因此正式实现改走桌面 IPC thread-follower 通道。96 项 Swift 测试、构建安装、严格签名、进程、自动化/Widget 诊断和 `git diff --check` 通过；实机辅助功能树确认两个入口、输入框与发送按钮可用，输入框聚焦时保持展开，移开后恢复 108×38pt 胶囊。
+- 2026-08-11：应用启动时桌面状态面板默认缩回为悬浮胶囊；胶囊首次显示于当前鼠标所在屏幕的右上角，之后保持用户可拖动位置。
+- 2026-08-11：移除桌面面板标题栏内的“缩小为悬浮按钮”入口，标题栏只保留状态与录音操作。
+- 2026-08-11：悬浮胶囊交互调整为临时悬停展开：指向胶囊即展开，离开主面板后延迟 0.5 秒自动缩回；返回面板会取消缩回。减少动态效果下沿用相同状态机、仅跳过过渡动画。95 项 Swift 测试覆盖离开/停留判断。
+- 2026-08-11：修复“缩小后消失”：悬停恢复可在缩小动画结束前触发，旧 completion 此前仍会将已经恢复的主面板隐藏，造成两个窗口都不可见。现在 completion 只在仍处于缩小状态时隐藏面板，并有回归测试覆盖该竞态。
+- 2026-08-11：桌面面板切换为 Liquid Glass 风格：主容器使用半透明系统材质、双层透光渐变、22pt 连续圆角、亮边与柔和阴影；额度、状态和任务卡使用独立玻璃层，任务卡悬停增加强调色反射；迷你悬浮胶囊改为带高光反射的深色玻璃。93 项 Swift 测试、`git diff --check`、严格签名和安装版进程启动通过；全屏截图回读确认可读性与玻璃层次。
+- 2026-08-11：悬浮胶囊新增鼠标进入即恢复桌面面板；悬停与点击复用同一恢复路径，拖拽逻辑保留。93 项 Swift 测试、`git diff --check`、安装版严格签名、进程启动与自动化诊断均通过。
 - 2026-08-11：TowerIsland 本机定制版更新到 1.3.4 build 1342。新增 `CodexQuotaMonitor`，每 15 秒只读扫描最近 Codex rollout 尾部的 `token_count.rate_limits`，收起刘海显示 5 小时/周额度中剩余更少的一项，展开标题栏显示两项；50% 以下橙色、20% 以下红色，无数据回退“已就绪”。鼠标悬停展开不再要求存在可见 Agent 会话，空闲刘海也会展开，移出沿用 0.5 秒保护收起。安装版回读真实 `周 80%`，严格签名、进程和 100 项 TowerIsland 集成测试通过。
 - 2026-08-11：0.5.15 build 47 修复运行态沿边流光和悬停缩放的动画截断。沿边动画改为固定胶囊描边遮罩内旋转的正方形锥形渐变，渐变首尾均为透明，不再使用跨闭合路径起点的 `strokeStart/strokeEnd`；悬浮窗口增加每边 6pt 透明安全区，可见胶囊仍为 108×38pt。安装版连续抓取 15 帧覆盖完整 1.8 秒流光周期，截图稳定为 120×50px，关键转角帧无右侧硬断、内部斜切线或窗口裁边。92 项 Swift 测试、`git diff --check`、严格签名、0.5.15 build 47、进程和自动化诊断通过。
 - 2026-08-11：0.5.14 build 46 完成悬浮胶囊分层动效增强。运行态同时挂载状态点呼吸、扩散环、背景漂移和沿边流光；状态切换同时挂载文字推入、状态点弹跳、色环扩散、胶囊弹性、状态色掠光和边框闪光；面板缩小/恢复增加连续窗口过渡。92 项 Swift 测试通过，其中动画层断言确认 9 个关键 Core Animation 动画已安装。安装版运行态 4 帧以 320ms 间隔采样，连续帧平均绝对像素差为 3.522、4.314、4.624，证明持续动效真实渲染；临时 waiting 状态回读为橙色“1 等待你”后已删除，状态目录只保留真实 `mario-daily.json`。`git diff --check`、严格签名、0.5.14 build 46、进程、面板缩小/恢复和自动化诊断均通过。
@@ -79,13 +91,13 @@
 
 ## 未解决
 
+- 浮窗对话当前只展示最近一条执行状态/回复摘要，不承载完整多轮消息记录；完整上下文仍以 Codex 会话为准。
 - Codex 额度展示服务端窗口的剩余百分比，不是逐线程精确 Token 数；若账号只返回周窗口，5 小时额度不显示。
 - 公司额度目前依赖 Edge 保留平台标签页；可评估平台官方机器凭证或本地安全缓存。
 - 后续自动化接入若要显示真实阶段进度，需在每个阶段更新 `phase`、`phaseIndex`、`phaseCount`；缺失时看板会正常退化为无轨道卡片。
 - 正式 Developer ID 签名和 notarization。
 - 私有 Touch Bar API 的系统升级兼容性。
 - 其他自动化程序仍需逐个接入状态 JSON；首个 Mario“下载数据并合并”已完成接入。
-- 原生小组件尚未由用户手动拖到桌面；不要再用 UI 自动化展开图库，交由用户搜索“AI 工作状态”并添加。
 - TowerIsland 仓库未提供 LICENSE 文件，当前只作为本机试用和视觉参考；不要把其源码复制进本项目，除非作者补充许可证或明确授权。
 
 ## 验证命令
@@ -93,8 +105,7 @@
 ```bash
 swift test --disable-sandbox --scratch-path /tmp/codex-hermes-touch-bar-tests
 ./script/build_and_run.sh --verify
-dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose-hermes
-dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose-automation
-dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose-widget
-dist/Codex\ Hermes\ Touch\ Bar.app/Contents/MacOS/CodexTouchBar --diagnose-effort low
+dist/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose-hermes
+dist/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose-automation
+dist/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose-effort low
 ```

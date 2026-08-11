@@ -549,6 +549,21 @@ private func rollout(
     #expect(events.weeklyLimit?.remainingPercent == 92)
 }
 
+@Test func tailReaderExtractsOnlyTheLatestFinalAssistantResult() throws {
+    let commentary = Data("""
+    {"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"处理中间状态"}}
+    """.utf8)
+    let final = Data("""
+    {"type":"event_msg","payload":{"type":"agent_message","phase":"final_answer","message":" 已完成第一项。\\n 下一步可以继续。 "}}
+    """.utf8)
+
+    #expect(RolloutTailReader.assistantResult(in: commentary) == nil)
+    #expect(
+        RolloutTailReader.assistantResult(in: final)
+            == "已完成第一项。 下一步可以继续。"
+    )
+}
+
 @Test func tailReaderRetriesAnIncompleteFinalLine() throws {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString)

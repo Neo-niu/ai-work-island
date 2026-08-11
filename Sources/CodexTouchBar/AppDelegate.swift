@@ -1,30 +1,5 @@
 import AppKit
 import CodexTouchBarCore
-import WidgetKit
-
-private struct WidgetPresentationState: Equatable {
-    let id: String
-    let title: String
-    let detail: String?
-    let status: WorkItemStatus
-    let startedAt: Date?
-    let outputPath: String?
-    let phase: String?
-    let phaseIndex: Int?
-    let phaseCount: Int?
-
-    init(_ item: WorkItem) {
-        id = item.id
-        title = item.title
-        detail = item.detail
-        status = item.status
-        startedAt = item.startedAt
-        outputPath = item.outputPath
-        phase = item.phase
-        phaseIndex = item.phaseIndex
-        phaseCount = item.phaseCount
-    }
-}
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -35,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let enabledDefaultsKey = "touchBarEnabled"
     private static let alwaysShowDefaultsKey = "touchBarAlwaysShow"
     private static let desktopPanelVisibleDefaultsKey = "desktopPanelVisible"
-    private static let desktopWidgetModeDefaultsKey = "desktopWidgetMode"
+    private static let backgroundPanelModeDefaultsKey = "backgroundPanelMode"
 
     private let scanner = RolloutScanner()
     private let automationStatusScanner = AutomationStatusScanner()
@@ -45,14 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let desktopPanelController = DesktopStatusPanelController()
     private let voiceMemoLauncher = VoiceMemoLauncher()
     private let recordingHotKey = GlobalRecordingHotKey()
-    private let widgetSnapshotStore = WidgetSnapshotStore()
     private let accessibilityController = CodexAccessibilityController()
     private var statusItem: NSStatusItem?
     private var statusMenuItem: NSMenuItem?
     private var enabledMenuItem: NSMenuItem?
     private var alwaysShowMenuItem: NSMenuItem?
     private var desktopPanelMenuItem: NSMenuItem?
-    private var desktopWidgetModeMenuItem: NSMenuItem?
     private var refreshTimer: Timer?
     private var scheduledRefreshInterval: TimeInterval?
     private var refreshInFlight = false
@@ -61,9 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var latestUnreadThreadCount = 0
     private var transientStatus: (message: String, expiresAt: Date)?
     private var threadStatusCycler = ThreadStatusCycler()
-    private var latestWidgetItems: [WorkItem]?
-    private var latestWidgetPresentation: [WidgetPresentationState]?
     private var latestHasActiveWork = false
+    private var conversationInFlight = false
+    private var cardConversationsInFlight: Set<String> = []
 
     private var isEnabled: Bool {
         get {
@@ -94,15 +67,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private var isDesktopWidgetMode: Bool {
+    private var isBackgroundPanelMode: Bool {
         get {
-            if UserDefaults.standard.object(forKey: Self.desktopWidgetModeDefaultsKey) == nil {
+            if UserDefaults.standard.object(forKey: Self.backgroundPanelModeDefaultsKey) == nil {
                 return true
             }
-            return UserDefaults.standard.bool(forKey: Self.desktopWidgetModeDefaultsKey)
+            return UserDefaults.standard.bool(forKey: Self.backgroundPanelModeDefaultsKey)
         }
         set {
-            UserDefaults.standard.set(newValue, forKey: Self.desktopWidgetModeDefaultsKey)
+            UserDefaults.standard.set(newValue, forKey: Self.backgroundPanelModeDefaultsKey)
         }
     }
 
@@ -153,8 +126,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         desktopPanelController.onItemOutputSelected = { [weak self] item in
             self?.openWorkItemOutput(item)
         }
-        desktopPanelController.onVoiceMemoSelected = { [weak self] in
-            self?.startVoiceMemoRecording()
+        desktopPanelController.onCodexPromptSubmitted = { [weak self] itemID, prompt in
+            self?.submitCodexCardPrompt(itemID: itemID, prompt: prompt)
+        }
+        desktopPanelController.onNewConversationSelected = { [weak self] in
+            self?.chooseProjectForNewConversation()
         }
         desktopPanelController.onVisibilityChanged = { [weak self] visible in
             guard let self else { return }
@@ -162,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.desktopPanelMenuItem?.state = visible ? .on : .off
             self.updateRefreshSchedule()
         }
-        desktopPanelController.setDisplayMode(isDesktopWidgetMode ? .desktopWidget : .floating)
+        desktopPanelController.setDisplayMode(isBackgroundPanelMode ? .background : .floating)
 
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
@@ -181,7 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestRefresh()
         updatePresentation()
         if isDesktopPanelVisible {
-            desktopPanelController.show()
+            desktopPanelController.showCollapsed()
         }
     }
 
@@ -194,36 +170,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().removeObserver(self)
     }
 
-    func application(_ application: NSApplication, open urls: [URL]) {
-        guard let url = urls.first(where: {
-            $0.scheme == WidgetStatusConfiguration.urlScheme
-        }) else {
-            return
-        }
-        if url.host == "record" {
-            startVoiceMemoRecording()
-            return
-        }
-        if url.host == "refresh" {
-            requestRefresh()
-            WidgetCenter.shared.reloadTimelines(ofKind: WidgetStatusConfiguration.kind)
-            showTransientStatus("正在刷新桌面小组件")
-            return
-        }
-        isDesktopPanelVisible = true
-        desktopPanelMenuItem?.state = .on
-        desktopPanelController.show()
-        updateRefreshSchedule()
-        requestRefresh()
-    }
-
     private func configureStatusItem() {
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
             button.image = NSImage(
                 systemSymbolName: "rectangle.and.hand.point.up.left.fill",
-                accessibilityDescription: "Codex Touch Bar"
-            ) ?? NSImage(systemSymbolName: "terminal.fill", accessibilityDescription: "Codex Touch Bar")
+                accessibilityDescription: "AI 工作岛"
+            ) ?? NSImage(systemSymbolName: "terminal.fill", accessibilityDescription: "AI 工作岛")
             button.image?.isTemplate = true
         }
 
@@ -260,14 +213,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         desktopPanelMenuItem.state = isDesktopPanelVisible ? .on : .off
         menu.addItem(desktopPanelMenuItem)
 
-        let desktopWidgetModeMenuItem = NSMenuItem(
-            title: "桌面小组件模式（窗口后方）",
-            action: #selector(toggleDesktopWidgetMode(_:)),
+        let backgroundPanelModeMenuItem = NSMenuItem(
+            title: "置于普通窗口后方",
+            action: #selector(toggleBackgroundPanelMode(_:)),
             keyEquivalent: ""
         )
-        desktopWidgetModeMenuItem.target = self
-        desktopWidgetModeMenuItem.state = isDesktopWidgetMode ? .on : .off
-        menu.addItem(desktopWidgetModeMenuItem)
+        backgroundPanelModeMenuItem.target = self
+        backgroundPanelModeMenuItem.state = isBackgroundPanelMode ? .on : .off
+        menu.addItem(backgroundPanelModeMenuItem)
 
         let openStatusDirectoryItem = NSMenuItem(
             title: "打开自动化状态目录",
@@ -286,24 +239,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startVoiceMemoItem.target = self
         menu.addItem(startVoiceMemoItem)
 
-        let refreshItem = NSMenuItem(title: "立即刷新", action: #selector(refreshNow), keyEquivalent: "r")
-        refreshItem.target = self
-        menu.addItem(refreshItem)
-
-        let openCodexItem = NSMenuItem(title: "打开 Codex", action: #selector(openCodex), keyEquivalent: "o")
-        openCodexItem.target = self
-        menu.addItem(openCodexItem)
-
-        let openHermesItem = NSMenuItem(title: "打开 Hermes", action: #selector(openHermes), keyEquivalent: "h")
-        openHermesItem.target = self
-        menu.addItem(openHermesItem)
-
         menu.addItem(.separator())
         let restartItem = NSMenuItem(title: "重启应用", action: #selector(restartApplication), keyEquivalent: "")
         restartItem.target = self
         menu.addItem(restartItem)
 
-        let quitItem = NSMenuItem(title: "退出 Codex Hermes Touch Bar", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "退出 AI 工作岛", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -313,7 +254,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.enabledMenuItem = enabledMenuItem
         self.alwaysShowMenuItem = alwaysShowMenuItem
         self.desktopPanelMenuItem = desktopPanelMenuItem
-        self.desktopWidgetModeMenuItem = desktopWidgetModeMenuItem
 
         if !touchBarController.isAvailable {
             statusMenuItem.title = "当前系统不支持 Touch Bar 常驻接口"
@@ -371,7 +311,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 $0 + $1.threads.filter(\.isUnread).count
             }
         }
-
         touchBarController.showCodexLimits(shortTerm: shortTermLimit, weekly: weeklyLimit)
         touchBarController.showCompanyQuota(companyQuota)
         let codexItems = WorkStatusHub.codexItems(from: groups)
@@ -381,6 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             latestHasActiveWork = hasActiveWork
             updateRefreshSchedule()
         }
+        desktopPanelController.updateCodexCardResults(from: groups)
         desktopPanelController.update(snapshot: WorkStatusSnapshot(
             items: workItems,
             automationIssues: automationResult.issues,
@@ -388,23 +328,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             codexWeeklyLimit: weeklyLimit,
             companyQuota: companyQuota
         ))
-        publishWidgetSnapshotIfNeeded(items: workItems)
         updateStatusText()
-    }
-
-    private func publishWidgetSnapshotIfNeeded(items: [WorkItem]) {
-        guard latestWidgetItems != items else { return }
-        do {
-            try widgetSnapshotStore.write(WidgetStatusSnapshot(items: items))
-            latestWidgetItems = items
-            let presentation = items.map(WidgetPresentationState.init)
-            if presentation != latestWidgetPresentation {
-                latestWidgetPresentation = presentation
-                WidgetCenter.shared.reloadTimelines(ofKind: WidgetStatusConfiguration.kind)
-            }
-        } catch {
-            showTransientStatus("无法更新系统小组件：\(error.localizedDescription)", duration: 15)
-        }
     }
 
     private func updateStatusText() {
@@ -580,6 +504,126 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenuItem?.title = message
     }
 
+    private func chooseProjectForNewConversation() {
+        guard !conversationInFlight else {
+            showTransientStatus("新会话正在创建")
+            return
+        }
+        let chooser = NSOpenPanel()
+        chooser.title = "为新 Codex 会话选择项目"
+        chooser.prompt = "选择项目"
+        chooser.message = "新会话只以所选目录作为工作目录。"
+        chooser.canChooseFiles = false
+        chooser.canChooseDirectories = true
+        chooser.allowsMultipleSelection = false
+        chooser.canCreateDirectories = true
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        guard chooser.runModal() == .OK, let projectURL = chooser.url else { return }
+
+        let promptField = NSTextField(string: "")
+        promptField.placeholderString = "输入首条指令…"
+        promptField.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+        let alert = NSAlert()
+        alert.messageText = "新建 · \(projectURL.lastPathComponent)"
+        alert.informativeText = "首条指令将以所选目录作为工作目录。"
+        alert.accessoryView = promptField
+        alert.addButton(withTitle: "创建会话")
+        alert.addButton(withTitle: "取消")
+        alert.window.initialFirstResponder = promptField
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let prompt = promptField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else {
+            showTransientStatus("首条指令不能为空")
+            NSSound.beep()
+            return
+        }
+        submitNewConversation(prompt: prompt, projectURL: projectURL)
+    }
+
+    private func submitNewConversation(prompt: String, projectURL: URL) {
+        guard !conversationInFlight else {
+            showTransientStatus("新会话正在创建")
+            return
+        }
+        conversationInFlight = true
+        desktopPanelController.setNewConversationBusy(true)
+        showTransientStatus("正在创建 \(projectURL.lastPathComponent) 会话")
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await CodexConversationBridge.send(
+                    prompt: prompt,
+                    route: .new(cwd: projectURL)
+                )
+                showTransientStatus("\(projectURL.lastPathComponent) 会话已创建")
+                requestRefresh()
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                showTransientStatus(message, duration: 15)
+                NSSound.beep()
+            }
+            conversationInFlight = false
+            desktopPanelController.setNewConversationBusy(false)
+        }
+    }
+
+    private func submitCodexCardPrompt(itemID: String, prompt: String) {
+        guard !cardConversationsInFlight.contains(itemID) else {
+            desktopPanelController.updateCodexCardStatus(
+                itemID: itemID,
+                text: "上一条指令仍在发送",
+                isBusy: true
+            )
+            return
+        }
+        let threadID = String(itemID.dropFirst("codex:".count))
+        guard let thread = latestGroups?.flatMap(\.threads).first(where: { $0.id == threadID }) else {
+            desktopPanelController.updateCodexCardStatus(itemID: itemID, text: "该项目会话当前不可用")
+            NSSound.beep()
+            return
+        }
+
+        cardConversationsInFlight.insert(itemID)
+        desktopPanelController.updateCodexCardStatus(
+            itemID: itemID,
+            text: "正在续接该项目…",
+            isBusy: true
+        )
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await CodexConversationBridge.send(
+                    prompt: prompt,
+                    route: .desktopThread(
+                        threadID: thread.id,
+                        cwd: thread.cwd,
+                        isActive: thread.isActive
+                    )
+                )
+                desktopPanelController.updateCodexCardStatus(
+                    itemID: itemID,
+                    text: Self.compactConversationText(result.assistantText)
+                )
+                showTransientStatus("已续接 \(thread.cwd.lastPathComponent)")
+                requestRefresh()
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                desktopPanelController.updateCodexCardStatus(itemID: itemID, text: message)
+                showTransientStatus(message, duration: 15)
+                NSSound.beep()
+            }
+            cardConversationsInFlight.remove(itemID)
+        }
+    }
+
+    private static func compactConversationText(_ text: String) -> String {
+        let compact = text
+            .split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ")
+        guard compact.count > 120 else { return compact }
+        return String(compact.prefix(119)) + "…"
+    }
+
     private func startVoiceMemoRecording() {
         Task { [weak self] in
             guard let self else { return }
@@ -609,11 +653,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func refreshTimerFired() {
         requestRefresh()
-    }
-
-    @objc private func refreshNow() {
-        requestRefresh()
-        updatePresentation()
     }
 
     @objc private func restoreDashboardFromExplicitOpen() {
@@ -663,10 +702,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateRefreshSchedule()
     }
 
-    @objc private func toggleDesktopWidgetMode(_ sender: NSMenuItem) {
-        isDesktopWidgetMode.toggle()
-        sender.state = isDesktopWidgetMode ? .on : .off
-        desktopPanelController.setDisplayMode(isDesktopWidgetMode ? .desktopWidget : .floating)
+    @objc private func toggleBackgroundPanelMode(_ sender: NSMenuItem) {
+        isBackgroundPanelMode.toggle()
+        sender.state = isBackgroundPanelMode ? .on : .off
+        desktopPanelController.setDisplayMode(isBackgroundPanelMode ? .background : .floating)
         if isDesktopPanelVisible {
             desktopPanelController.show()
         }
@@ -683,20 +722,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             showTransientStatus("无法打开状态目录：\(error.localizedDescription)", duration: 15)
         }
-    }
-
-    @objc private func openCodex() {
-        NSWorkspace.shared.openApplication(
-            at: URL(fileURLWithPath: "/Applications/ChatGPT.app"),
-            configuration: NSWorkspace.OpenConfiguration()
-        )
-    }
-
-    @objc private func openHermes() {
-        NSWorkspace.shared.openApplication(
-            at: URL(fileURLWithPath: "/Applications/Hermes.app"),
-            configuration: NSWorkspace.OpenConfiguration()
-        )
     }
 
     @objc private func restartApplication() {

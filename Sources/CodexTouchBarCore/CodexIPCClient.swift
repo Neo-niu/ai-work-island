@@ -2,6 +2,11 @@ import Darwin
 import Foundation
 
 public actor CodexIPCClient {
+    public enum PromptDisposition: Sendable {
+        case startedTurn
+        case steeredActiveTurn
+    }
+
     public enum ClientError: LocalizedError {
         case socketUnavailable
         case connectionFailed(String)
@@ -11,13 +16,13 @@ public actor CodexIPCClient {
         public var errorDescription: String? {
             switch self {
             case .socketUnavailable:
-                "Codex 本机设置通道不可用。"
+                "Codex 本机通道不可用。"
             case let .connectionFailed(message):
-                "无法连接 Codex 本机设置通道：\(message)"
+                "无法连接 Codex 本机通道：\(message)"
             case .invalidResponse:
-                "Codex 返回了无效的设置响应。"
+                "Codex 返回了无效响应。"
             case let .requestFailed(message):
-                "Codex 未接受推理程度设置：\(message)"
+                "Codex 未接受请求：\(message)"
             }
         }
     }
@@ -44,26 +49,7 @@ public actor CodexIPCClient {
         }
         let descriptor = try connectSocket()
         defer { Darwin.close(descriptor) }
-
-        let initializeID = UUID().uuidString
-        try send(
-            [
-                "type": "request",
-                "requestId": initializeID,
-                "sourceClientId": "initializing-client",
-                "version": 0,
-                "method": "initialize",
-                "params": ["clientType": "codex-hermes-touch-bar"],
-                "timeoutMs": timeoutSeconds * 1_000,
-            ],
-            to: descriptor
-        )
-        let initialize = try readResponse(requestID: initializeID, from: descriptor)
-        guard initialize["resultType"] as? String == "success",
-              let result = initialize["result"] as? [String: Any],
-              let clientID = result["clientId"] as? String else {
-            throw responseError(initialize)
-        }
+        let clientID = try initializeClient(on: descriptor)
 
         let updateID = UUID().uuidString
         try send(
@@ -87,6 +73,105 @@ public actor CodexIPCClient {
               updateResult["ok"] as? Bool == true else {
             throw responseError(update)
         }
+    }
+
+    public func sendPrompt(
+        threadID: String,
+        cwd: URL,
+        prompt: String,
+        isActive: Bool
+    ) throws -> PromptDisposition {
+        guard FileManager.default.fileExists(atPath: socketURL.path) else {
+            throw ClientError.socketUnavailable
+        }
+        let descriptor = try connectSocket()
+        defer { Darwin.close(descriptor) }
+        let clientID = try initializeClient(on: descriptor)
+        let requestID = UUID().uuidString
+        let messageID = UUID().uuidString
+        let input: [[String: Any]] = [[
+            "type": "text",
+            "text": prompt,
+            "text_elements": [],
+        ]]
+
+        let method: String
+        let params: [String: Any]
+        if isActive {
+            method = "thread-follower-steer-turn"
+            params = [
+                "conversationId": threadID,
+                "clientUserMessageId": messageID,
+                "input": input,
+                "attachments": [],
+                "restoreMessage": [
+                    "id": messageID,
+                    "text": prompt,
+                    "cwd": cwd.path,
+                    "createdAt": Int(Date().timeIntervalSince1970 * 1_000),
+                    "context": [
+                        "prompt": prompt,
+                        "workspaceRoots": [cwd.path],
+                        "commentAttachments": [],
+                        "imageAttachments": [],
+                        "fileAttachments": [],
+                        "pastedTextAttachments": [],
+                        "addedFiles": [],
+                    ],
+                ],
+            ]
+        } else {
+            method = "thread-follower-start-turn"
+            params = [
+                "conversationId": threadID,
+                "turnStartParams": [
+                    "clientUserMessageId": messageID,
+                    "input": input,
+                    "cwd": cwd.path,
+                    "commentAttachments": [],
+                    "attachments": [],
+                    "useAppServerPermissionDefault": true,
+                ],
+                "mcpAppModelContextAttachments": [],
+            ]
+        }
+        try send([
+            "type": "request",
+            "requestId": requestID,
+            "sourceClientId": clientID,
+            "version": 1,
+            "method": method,
+            "params": params,
+            "timeoutMs": timeoutSeconds * 1_000,
+        ], to: descriptor)
+        let response = try readResponse(requestID: requestID, from: descriptor)
+        guard response["resultType"] as? String == "success" else {
+            throw responseError(response)
+        }
+        return isActive ? .steeredActiveTurn : .startedTurn
+    }
+
+    private func initializeClient(on descriptor: Int32) throws -> String {
+        let initializeID = UUID().uuidString
+        try send(
+            [
+                "type": "request",
+                "requestId": initializeID,
+                "sourceClientId": "initializing-client",
+                "version": 0,
+                "method": "initialize",
+                "params": ["clientType": "codex-hermes-touch-bar"],
+                "timeoutMs": timeoutSeconds * 1_000,
+            ],
+            to: descriptor
+        )
+        let initialize = try readResponse(requestID: initializeID, from: descriptor)
+        guard initialize["resultType"] as? String == "success",
+              let result = initialize["result"] as? [String: Any],
+              let clientID = result["clientId"] as? String else {
+            throw responseError(initialize)
+        }
+        return clientID
     }
 
     private func connectSocket() throws -> Int32 {

@@ -56,6 +56,7 @@ public struct ActiveThread: Equatable, Sendable {
     public let projectRecencyAt: Date
     public let isActive: Bool
     public let isUnread: Bool
+    public let lastAssistantResult: String?
 
     public init(
         id: String,
@@ -65,7 +66,8 @@ public struct ActiveThread: Equatable, Sendable {
         updatedAt: Date,
         projectRecencyAt: Date? = nil,
         isActive: Bool = true,
-        isUnread: Bool = false
+        isUnread: Bool = false,
+        lastAssistantResult: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -75,6 +77,7 @@ public struct ActiveThread: Equatable, Sendable {
         self.projectRecencyAt = projectRecencyAt ?? updatedAt
         self.isActive = isActive
         self.isUnread = isUnread
+        self.lastAssistantResult = lastAssistantResult
     }
 }
 

@@ -19,12 +19,6 @@ import Testing
     #expect(command == .diagnoseAutomation)
 }
 
-@Test func parsesAWidgetDiagnostic() {
-    let command = LaunchCommand(arguments: ["CodexTouchBar", "--diagnose-widget"])
-
-    #expect(command == .diagnoseWidget)
-}
-
 @Test func parsesAnAccessibilityTreeDiagnostic() {
     let command = LaunchCommand(arguments: ["CodexTouchBar", "--diagnose-accessibility-tree"])
 

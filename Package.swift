@@ -9,7 +9,6 @@ let package = Package(
     ],
     products: [
         .executable(name: "CodexTouchBar", targets: ["CodexTouchBar"]),
-        .executable(name: "CodexStatusWidget", targets: ["CodexStatusWidget"]),
         .library(name: "CodexTouchBarCore", targets: ["CodexTouchBarCore"]),
     ],
     targets: [
@@ -41,18 +40,6 @@ let package = Package(
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("ServiceManagement"),
-            ]
-        ),
-        .executableTarget(
-            name: "CodexStatusWidget",
-            dependencies: ["CodexTouchBarCore"],
-            path: "Sources/CodexStatusWidget",
-            swiftSettings: [
-                .unsafeFlags(["-application-extension", "-parse-as-library"]),
-            ],
-            linkerSettings: [
-                .linkedFramework("SwiftUI"),
-                .linkedFramework("WidgetKit"),
             ]
         ),
         .testTarget(

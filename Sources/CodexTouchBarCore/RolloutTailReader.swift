@@ -9,6 +9,7 @@ struct RolloutTailUpdate: Equatable, Sendable {
     let latestEvent: RolloutTaskEvent?
     let latestShortTermLimit: WeeklyLimitUsage?
     let latestWeeklyLimit: WeeklyLimitUsage?
+    let latestAssistantResult: String?
     let processedOffset: UInt64
     let bytesRead: Int
 }
@@ -25,6 +26,7 @@ enum RolloutTailReader {
                 latestEvent: nil,
                 latestShortTermLimit: nil,
                 latestWeeklyLimit: nil,
+                latestAssistantResult: nil,
                 processedOffset: offset,
                 bytesRead: data.count
             )
@@ -34,17 +36,20 @@ enum RolloutTailReader {
         var latestEvent: RolloutTaskEvent?
         var latestShortTermLimit: WeeklyLimitUsage?
         var latestWeeklyLimit: WeeklyLimitUsage?
+        var latestAssistantResult: String?
         for line in completedData.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true) {
             let events = lineEvents(in: Data(line))
             latestEvent = events.task ?? latestEvent
             latestShortTermLimit = events.shortTermLimit ?? latestShortTermLimit
             latestWeeklyLimit = events.weeklyLimit ?? latestWeeklyLimit
+            latestAssistantResult = assistantResult(in: Data(line)) ?? latestAssistantResult
         }
 
         return RolloutTailUpdate(
             latestEvent: latestEvent,
             latestShortTermLimit: latestShortTermLimit,
             latestWeeklyLimit: latestWeeklyLimit,
+            latestAssistantResult: latestAssistantResult,
             processedOffset: offset + UInt64(completedData.count),
             bytesRead: data.count
         )
@@ -78,6 +83,58 @@ enum RolloutTailReader {
 
     static func weeklyLimit(in lineData: Data) -> WeeklyLimitUsage? {
         lineEvents(in: lineData).weeklyLimit
+    }
+
+    static func assistantResult(in lineData: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: lineData),
+              let envelope = object as? [String: Any],
+              let payload = envelope["payload"] as? [String: Any] else {
+            return nil
+        }
+        let phase = payload["phase"] as? String
+        guard phase == nil || phase == "final_answer" else { return nil }
+
+        let rawText: String?
+        if envelope["type"] as? String == "event_msg",
+           payload["type"] as? String == "agent_message" {
+            rawText = payload["message"] as? String
+        } else if envelope["type"] as? String == "response_item",
+                  payload["type"] as? String == "message",
+                  payload["role"] as? String == "assistant",
+                  let content = payload["content"] as? [[String: Any]] {
+            rawText = content.compactMap { item in
+                guard item["type"] as? String == "output_text" else { return nil }
+                return item["text"] as? String
+            }.joined(separator: "\n")
+        } else {
+            rawText = nil
+        }
+        guard let rawText else { return nil }
+        var displayText = rawText
+        if let citationStart = displayText.range(of: "<oai-mem-citation>") {
+            displayText.removeSubrange(citationStart.lowerBound...)
+        }
+        displayText = displayText.replacingOccurrences(
+            of: #"\[([^\]]+)\]\([^\)]+\)"#,
+            with: "$1",
+            options: .regularExpression
+        )
+        displayText = displayText.replacingOccurrences(
+            of: #"[*_`#>]"#,
+            with: "",
+            options: .regularExpression
+        )
+        displayText = displayText.replacingOccurrences(
+            of: #"(?:^|\s)[-•]\s+"#,
+            with: " ",
+            options: .regularExpression
+        )
+        let compact = displayText
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        guard !compact.isEmpty else { return nil }
+        return compact.count > 120 ? String(compact.prefix(119)) + "…" : compact
     }
 
     static func lineEvents(

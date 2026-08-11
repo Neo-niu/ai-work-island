@@ -3,16 +3,33 @@ import CodexTouchBarCore
 import QuartzCore
 
 enum DesktopPanelMode: Equatable {
-    case desktopWidget
+    case background
     case floating
+}
+
+enum DesktopPanelWindowPolicy {
+    static func floatsAboveFullScreen(
+        mode: DesktopPanelMode,
+        hoverExpanded: Bool
+    ) -> Bool {
+        mode == .floating || hoverExpanded
+    }
 }
 
 enum DesktopPanelLayout {
     static let width: CGFloat = 372
 
-    static func contentSize(visibleItemCount: Int, sectionCount: Int = 0) -> NSSize {
-        let height = CGFloat(154 + max(1, visibleItemCount) * 62 + sectionCount * 22)
-        return NSSize(width: width, height: min(height, 620))
+    static func contentSize(
+        visibleItemCount: Int,
+        sectionCount: Int = 0,
+        conversationItemCount: Int = 0
+    ) -> NSSize {
+        let baseHeight = 144
+        let itemHeight = max(1, visibleItemCount) * 62
+        let sectionHeight = sectionCount * 22
+        let conversationHeight = conversationItemCount * 40
+        let height = CGFloat(baseHeight + itemHeight + sectionHeight + conversationHeight)
+        return NSSize(width: width, height: min(height, 700))
     }
 }
 
@@ -63,7 +80,7 @@ struct DesktopFloatingButtonPresentation: Equatable {
             pulses = false
         }
 
-        let accessibilityLabel = "恢复 AI 工作状态；当前\(displayText)"
+        let accessibilityLabel = "恢复 AI 工作岛；当前\(displayText)"
         return Self(
             displayText: displayText,
             tintColor: tintColor,
@@ -89,6 +106,24 @@ enum DesktopFloatingButtonMotion {
     }
 }
 
+enum DesktopFloatingPanelTransition {
+    static func shouldFinishMinimizing(isMinimizedToFloatingButton: Bool) -> Bool {
+        isMinimizedToFloatingButton
+    }
+}
+
+enum DesktopFloatingHoverBehavior {
+    static let collapseDelay: TimeInterval = 0.5
+
+    static func shouldAutoCollapse(
+        isHoverExpanded: Bool,
+        isPanelHovered: Bool,
+        isInteractionActive: Bool = false
+    ) -> Bool {
+        isHoverExpanded && !isPanelHovered && !isInteractionActive
+    }
+}
+
 struct DesktopFloatingButtonMotionSnapshot: Equatable {
     let root: Set<String>
     let statusDot: Set<String>
@@ -108,8 +143,9 @@ struct DesktopPanelItemPresentation: Equatable {
     let phase: String?
     let phaseIndex: Int?
     let phaseCount: Int?
+    let lastAssistantResult: String?
 
-    init(_ item: WorkItem) {
+    init(_ item: WorkItem, lastAssistantResult: String? = nil) {
         id = item.id
         title = item.displayTitle
         detail = item.displayDetail
@@ -119,6 +155,7 @@ struct DesktopPanelItemPresentation: Equatable {
         phase = item.phase
         phaseIndex = item.phaseIndex
         phaseCount = item.phaseCount
+        self.lastAssistantResult = lastAssistantResult
     }
 }
 
@@ -127,8 +164,14 @@ struct DesktopPanelContentSignature: Equatable {
     let automationIssues: [String]
     let layoutTokens: [String]
 
-    init(snapshot: WorkStatusSnapshot, layoutTokens: [String]) {
-        items = snapshot.items.map(DesktopPanelItemPresentation.init)
+    init(
+        snapshot: WorkStatusSnapshot,
+        layoutTokens: [String],
+        codexResults: [String: String]
+    ) {
+        items = snapshot.items.map {
+            DesktopPanelItemPresentation($0, lastAssistantResult: codexResults[$0.id])
+        }
         automationIssues = snapshot.automationIssues
         self.layoutTokens = layoutTokens
     }
@@ -174,17 +217,19 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
     var onItemSelected: ((WorkItem) -> Void)?
     var onItemDetailsSelected: ((WorkItem) -> Void)?
     var onItemOutputSelected: ((WorkItem) -> Void)?
-    var onVoiceMemoSelected: (() -> Void)?
+    var onCodexPromptSubmitted: ((String, String) -> Void)?
+    var onNewConversationSelected: (() -> Void)?
     var onVisibilityChanged: ((Bool) -> Void)?
 
     private let panel: NSPanel
     private let floatingPanel: NSPanel
     private let floatingButtonView = FloatingStatusButtonView()
-    private let titleLabel = NSTextField(labelWithString: "AI 工作状态")
+    private let titleLabel = NSTextField(labelWithString: "AI 工作岛")
     private let statusCapsule = StatusCapsuleView()
-    private let voiceMemoButton = NSButton(title: "录音", target: nil, action: nil)
+    private let newConversationButton = NSButton()
     private let codexQuotaView = DesktopQuotaSummaryView()
     private let companyQuotaView = DesktopQuotaSummaryView()
+    private let quotaStack = NSStackView()
     private let itemStack = NSStackView()
     private let footerLabel = NSTextField(labelWithString: "")
     private var displayedItemIDs: [String]?
@@ -199,6 +244,13 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
     private var displayedContentSignature: DesktopPanelContentSignature?
     private var isMinimizedToFloatingButton = false
     private var didPositionFloatingPanel = false
+    private var isHoverExpanded = false
+    private var isPanelHovered = false
+    private var pendingAutoCollapse: DispatchWorkItem?
+    private var isConversationEditing = false
+    private var codexResults: [String: String] = [:]
+    private var codexRows: [String: WorkItemRowView] = [:]
+    private var displayMode: DesktopPanelMode = .background
 
     override init() {
         panel = NSPanel(
@@ -221,14 +273,25 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
     var isVisible: Bool { panel.isVisible || floatingPanel.isVisible }
 
     func setDisplayMode(_ mode: DesktopPanelMode) {
-        switch mode {
-        case .desktopWidget:
+        displayMode = mode
+        applyDisplayMode(hoverExpanded: isHoverExpanded && !isMinimizedToFloatingButton)
+    }
+
+    private func applyDisplayMode(hoverExpanded: Bool) {
+        let floatsAboveFullScreen = DesktopPanelWindowPolicy.floatsAboveFullScreen(
+            mode: displayMode,
+            hoverExpanded: hoverExpanded
+        )
+        switch displayMode {
+        case .background:
             panel.styleMask.remove(.closable)
-            panel.isFloatingPanel = false
-            panel.level = NSWindow.Level(
-                rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 2
-            )
-            panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+            panel.isFloatingPanel = floatsAboveFullScreen
+            panel.level = floatsAboveFullScreen
+                ? .floating
+                : NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 2)
+            panel.collectionBehavior = floatsAboveFullScreen
+                ? [.canJoinAllSpaces, .fullScreenAuxiliary]
+                : [.canJoinAllSpaces, .stationary, .ignoresCycle]
             panel.standardWindowButton(.closeButton)?.isHidden = true
             panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
             panel.standardWindowButton(.zoomButton)?.isHidden = true
@@ -244,13 +307,30 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
     }
 
     func show() {
+        cancelPendingAutoCollapse()
+        isHoverExpanded = false
         isMinimizedToFloatingButton = false
+        applyDisplayMode(hoverExpanded: false)
         floatingPanel.orderOut(nil)
         panel.orderFrontRegardless()
     }
 
+    func showCollapsed() {
+        cancelPendingAutoCollapse()
+        isHoverExpanded = false
+        isMinimizedToFloatingButton = true
+        applyDisplayMode(hoverExpanded: false)
+        positionFloatingPanelIfNeeded()
+        panel.orderOut(nil)
+        floatingPanel.alphaValue = 1
+        floatingPanel.orderFrontRegardless()
+    }
+
     func hide() {
+        cancelPendingAutoCollapse()
+        isHoverExpanded = false
         isMinimizedToFloatingButton = false
+        applyDisplayMode(hoverExpanded: false)
         panel.orderOut(nil)
         floatingPanel.orderOut(nil)
     }
@@ -268,7 +348,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         let visibleIDs = layout.tokens
         let contentSignature = DesktopPanelContentSignature(
             snapshot: snapshot,
-            layoutTokens: visibleIDs
+            layoutTokens: visibleIDs,
+            codexResults: codexResults
         )
         guard displayedContentSignature != contentSignature else {
             return
@@ -296,6 +377,27 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         )
     }
 
+    func setNewConversationBusy(_ isBusy: Bool) {
+        newConversationButton.isEnabled = !isBusy
+        newConversationButton.toolTip = isBusy ? "正在创建新会话" : "新建 Codex 会话"
+    }
+
+    func updateCodexCardResults(from groups: [ProjectGroup]) {
+        codexResults = Dictionary(uniqueKeysWithValues: groups.flatMap { group in
+            group.threads.compactMap { thread in
+                thread.lastAssistantResult.map { ("codex:\(thread.id)", $0) }
+            }
+        })
+    }
+
+    func updateCodexCardStatus(
+        itemID: String,
+        text: String,
+        isBusy: Bool = false
+    ) {
+        codexRows[itemID]?.updateConversationStatus(text, isBusy: isBusy)
+    }
+
     private func apply(snapshot: WorkStatusSnapshot, resizeImmediately: Bool) {
         let running = snapshot.items.filter { $0.status == .running }.count
         let queued = snapshot.items.filter { $0.status == .queued }.count
@@ -307,15 +409,16 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         } else if attention > 0 {
             statusCapsule.update(text: "\(running) 运行 · \(attention) 待处理", color: .systemOrange)
         } else if queued > 0 {
-            statusCapsule.update(text: "\(running) 运行 · \(queued) 等待查询", color: .systemIndigo)
+            statusCapsule.update(text: "\(running) 运行 · \(queued) 等待", color: .systemIndigo)
         } else {
-            statusCapsule.update(text: "\(running) 运行 · 共 \(snapshot.items.count) 项", color: .systemBlue)
+            statusCapsule.update(text: "\(running) 运行", color: .systemBlue)
         }
 
         itemStack.arrangedSubviews.forEach {
             itemStack.removeArrangedSubview($0)
             $0.removeFromSuperview()
         }
+        codexRows.removeAll(keepingCapacity: true)
 
         let layout = panelLayout(for: snapshot)
         if snapshot.items.isEmpty {
@@ -340,11 +443,24 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
                 }
                 itemStack.addArrangedSubview(header)
                 for item in sectionLayout.items {
-                    let row = WorkItemRowView(item: item)
+                    let row = WorkItemRowView(
+                        item: item,
+                        lastAssistantResult: codexResults[item.id]
+                    )
                     row.onSelected = { [weak self] in self?.onItemSelected?(item) }
                     row.onDetailsSelected = { [weak self] in self?.onItemDetailsSelected?(item) }
                     row.onOutputSelected = item.outputPath == nil ? nil : { [weak self] in
                         self?.onItemOutputSelected?(item)
+                    }
+                    if item.id.hasPrefix("codex:") {
+                        row.onPromptSubmitted = { [weak self] prompt in
+                            self?.onCodexPromptSubmitted?(item.id, prompt)
+                        }
+                        row.onEditingChanged = { [weak self] editing in
+                            self?.isConversationEditing = editing
+                            if editing { self?.cancelPendingAutoCollapse() }
+                        }
+                        codexRows[item.id] = row
                     }
                     itemStack.addArrangedSubview(row)
                     if let color = pendingSweepColors.removeValue(forKey: item.id) {
@@ -354,19 +470,18 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
             }
         }
 
-        let hiddenCount = snapshot.items.count - layout.rowCount
-        let issueText = snapshot.automationIssues.isEmpty
-            ? ""
-            : " · 状态文件异常 \(snapshot.automationIssues.count)"
-        let hiddenText = hiddenCount > 0 ? " · 另有 \(hiddenCount) 项" : ""
-        let latestMeaningfulUpdate = snapshot.items.map(\.updatedAt).max() ?? snapshot.refreshedAt
-        footerLabel.stringValue = "更新于 \(Self.timeFormatter.string(from: latestMeaningfulUpdate))\(hiddenText)\(issueText)"
-        footerLabel.textColor = snapshot.automationIssues.isEmpty ? .tertiaryLabelColor : .systemRed
+        footerLabel.isHidden = snapshot.automationIssues.isEmpty
+        footerLabel.stringValue = "状态文件异常 \(snapshot.automationIssues.count)"
+        footerLabel.textColor = .systemRed
 
         if resizeImmediately {
             panel.setContentSize(DesktopPanelLayout.contentSize(
                 visibleItemCount: layout.rowCount,
-                sectionCount: layout.sections.count
+                sectionCount: layout.sections.count,
+                conversationItemCount: layout.sections
+                    .flatMap(\.items)
+                    .filter { $0.id.hasPrefix("codex:") }
+                    .count
             ))
         }
     }
@@ -391,10 +506,15 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
             apply(snapshot: snapshot, resizeImmediately: false)
             panel.contentView?.layoutSubtreeIfNeeded()
 
-            let sectionCount = panelLayout(for: snapshot).sections.count
+            let nextLayout = panelLayout(for: snapshot)
+            let sectionCount = nextLayout.sections.count
             let contentSize = DesktopPanelLayout.contentSize(
                 visibleItemCount: newRowCount,
-                sectionCount: sectionCount
+                sectionCount: sectionCount,
+                conversationItemCount: nextLayout.sections
+                    .flatMap(\.items)
+                    .filter { $0.id.hasPrefix("codex:") }
+                    .count
             )
             let outerSize = panel.frameRect(
                 forContentRect: NSRect(origin: .zero, size: contentSize)
@@ -441,9 +561,10 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         ].compactMap { $0 }.joined(separator: " · ")
         codexQuotaView.update(
             title: "Codex 额度",
-            value: codexText.isEmpty ? "暂不可用" : codexText,
+            value: codexText,
             remainingPercent: codexLimits.map(\.remainingPercent).min()
         )
+        codexQuotaView.isHidden = codexText.isEmpty
 
         if let quota = snapshot.companyQuota {
             companyQuotaView.update(
@@ -451,9 +572,11 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
                 value: String(format: "$%.2f · %d%%", quota.remainingUSD, quota.remainingPercent),
                 remainingPercent: quota.remainingPercent
             )
+            companyQuotaView.isHidden = false
         } else {
-            companyQuotaView.update(title: "公司额度", value: "暂不可用", remainingPercent: nil)
+            companyQuotaView.isHidden = true
         }
+        quotaStack.isHidden = codexQuotaView.isHidden && companyQuotaView.isHidden
     }
 
     private func captureStatusEffects(in snapshot: WorkStatusSnapshot) {
@@ -515,6 +638,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        cancelPendingAutoCollapse()
+        isHoverExpanded = false
         isMinimizedToFloatingButton = false
         floatingPanel.orderOut(nil)
         onVisibilityChanged?(false)
@@ -522,7 +647,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
 
     private func configurePanel() {
         panel.delegate = self
-        panel.title = "AI 工作状态"
+        panel.title = "AI 工作岛"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
@@ -531,14 +656,17 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.minSize = NSSize(width: DesktopPanelLayout.width, height: 166)
-        panel.maxSize = NSSize(width: DesktopPanelLayout.width, height: 666)
+        panel.maxSize = NSSize(width: DesktopPanelLayout.width, height: 746)
         panel.setFrameAutosaveName("AIWorkStatusPanelFrame")
 
         let materialView = PanelBackgroundView()
         materialView.wantsLayer = true
-        materialView.layer?.cornerRadius = 14
+        materialView.layer?.cornerRadius = 22
         materialView.layer?.cornerCurve = .continuous
         materialView.layer?.masksToBounds = true
+        materialView.onHoverChanged = { [weak self] isHovering in
+            self?.setPanelHovering(isHovering)
+        }
         panel.contentView = materialView
 
         titleLabel.font = .systemFont(ofSize: 18, weight: .bold)
@@ -546,40 +674,24 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusCapsule.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        voiceMemoButton.image = NSImage(
-            systemSymbolName: "mic.circle.fill",
-            accessibilityDescription: "开始语音备忘录录音"
+        newConversationButton.image = NSImage(
+            systemSymbolName: "plus.circle.fill",
+            accessibilityDescription: "新建 Codex 会话"
         )
-        voiceMemoButton.imagePosition = .imageLeading
-        voiceMemoButton.bezelStyle = .recessed
-        voiceMemoButton.font = .systemFont(ofSize: 11, weight: .semibold)
-        voiceMemoButton.target = self
-        voiceMemoButton.action = #selector(startVoiceMemo)
-        voiceMemoButton.toolTip = "打开语音备忘录并立即开始；30 秒以上录音结束后自动生成会议纪要"
-        voiceMemoButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+        newConversationButton.isBordered = false
+        newConversationButton.contentTintColor = .controlAccentColor
+        newConversationButton.target = self
+        newConversationButton.action = #selector(newConversation)
+        newConversationButton.toolTip = "新建 Codex 会话"
+        newConversationButton.setAccessibilityLabel("新建 Codex 会话")
+        newConversationButton.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let minimizeButton = NSButton(
-            image: NSImage(
-                systemSymbolName: "arrow.down.right.and.arrow.up.left",
-                accessibilityDescription: "缩小为悬浮按钮"
-            ) ?? NSImage(),
-            target: self,
-            action: #selector(minimizeToFloatingButton)
-        )
-        minimizeButton.isBordered = false
-        minimizeButton.bezelStyle = .inline
-        minimizeButton.contentTintColor = .secondaryLabelColor
-        minimizeButton.toolTip = "缩小为悬浮按钮"
-        minimizeButton.setAccessibilityLabel("缩小为悬浮按钮")
-        minimizeButton.setContentHuggingPriority(.required, for: .horizontal)
-        minimizeButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        let header = NSStackView(views: [titleLabel, NSView(), statusCapsule, voiceMemoButton, minimizeButton])
+        let header = NSStackView(views: [titleLabel, NSView(), statusCapsule, newConversationButton])
         header.orientation = .horizontal
         header.alignment = .centerY
         header.spacing = 8
 
-        let quotaStack = NSStackView(views: [codexQuotaView, companyQuotaView])
+        quotaStack.setViews([codexQuotaView, companyQuotaView], in: .leading)
         quotaStack.orientation = .horizontal
         quotaStack.alignment = .centerY
         quotaStack.distribution = .fillEqually
@@ -609,30 +721,20 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         ])
     }
 
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter
-    }()
-
-    @objc private func startVoiceMemo() {
-        onVoiceMemoSelected?()
+    @objc private func newConversation() {
+        onNewConversationSelected?()
     }
 
     @objc private func minimizeToFloatingButton() {
         guard !isMinimizedToFloatingButton else { return }
+        cancelPendingAutoCollapse()
+        isHoverExpanded = false
         isMinimizedToFloatingButton = true
-        if !didPositionFloatingPanel {
-            let size = DesktopFloatingButtonLayout.canvasSize
-            floatingPanel.setFrameOrigin(NSPoint(
-                x: panel.frame.maxX - size.width,
-                y: panel.frame.maxY - size.height
-            ))
-            didPositionFloatingPanel = true
-        }
+        positionFloatingPanelIfNeeded()
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard !reduceMotion else {
             panel.orderOut(nil)
+            applyDisplayMode(hoverExpanded: false)
             floatingPanel.orderFrontRegardless()
             return
         }
@@ -647,8 +749,17 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
             floatingPanel.animator().alphaValue = 1
         } completionHandler: { [weak self] in
             guard let self else { return }
+            // Hover can restore the panel before this shrinking animation finishes.
+            // Do not let the stale completion hide the newly restored panel.
+            guard DesktopFloatingPanelTransition.shouldFinishMinimizing(
+                isMinimizedToFloatingButton: isMinimizedToFloatingButton
+            ) else {
+                panel.alphaValue = 1
+                return
+            }
             panel.orderOut(nil)
             panel.alphaValue = 1
+            applyDisplayMode(hoverExpanded: false)
         }
     }
 
@@ -674,21 +785,32 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
         ])
         floatingPanel.contentView = canvas
         floatingButtonView.onActivate = { [weak self] in
-            self?.activateFloatingButton()
+            self?.activateFloatingButton(hoverExpanded: false)
+        }
+        floatingButtonView.onHoverEntered = { [weak self] in
+            self?.activateFloatingButton(hoverExpanded: true)
         }
     }
 
-    private func activateFloatingButton() {
+    private func activateFloatingButton(hoverExpanded: Bool) {
         guard isMinimizedToFloatingButton else { return }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard !reduceMotion else {
-            show()
+            isMinimizedToFloatingButton = false
+            isHoverExpanded = hoverExpanded
+            applyDisplayMode(hoverExpanded: hoverExpanded)
+            floatingPanel.orderOut(nil)
+            panel.orderFrontRegardless()
+            refreshPanelHoverState()
             return
         }
 
         isMinimizedToFloatingButton = false
+        isHoverExpanded = hoverExpanded
+        applyDisplayMode(hoverExpanded: hoverExpanded)
         panel.alphaValue = 0
         panel.orderFrontRegardless()
+        refreshPanelHoverState()
         floatingButtonView.playExit()
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.24
@@ -701,11 +823,76 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate {
             floatingPanel.alphaValue = 1
         }
     }
+
+    private func setPanelHovering(_ isHovering: Bool) {
+        isPanelHovered = isHovering
+        if isHovering {
+            cancelPendingAutoCollapse()
+            return
+        }
+        scheduleAutoCollapseIfNeeded()
+    }
+
+    private func refreshPanelHoverState() {
+        guard let contentView = panel.contentView else { return }
+        let windowPoint = panel.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let point = contentView.convert(windowPoint, from: nil)
+        setPanelHovering(contentView.bounds.contains(point))
+    }
+
+    private func scheduleAutoCollapseIfNeeded() {
+        guard DesktopFloatingHoverBehavior.shouldAutoCollapse(
+            isHoverExpanded: isHoverExpanded,
+            isPanelHovered: isPanelHovered,
+            isInteractionActive: isConversationEditing
+        ) else { return }
+        cancelPendingAutoCollapse()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  DesktopFloatingHoverBehavior.shouldAutoCollapse(
+                    isHoverExpanded: isHoverExpanded,
+                    isPanelHovered: isPanelHovered,
+                    isInteractionActive: isConversationEditing
+                  ) else { return }
+            minimizeToFloatingButton()
+        }
+        pendingAutoCollapse = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + DesktopFloatingHoverBehavior.collapseDelay,
+            execute: workItem
+        )
+    }
+
+    private func cancelPendingAutoCollapse() {
+        pendingAutoCollapse?.cancel()
+        pendingAutoCollapse = nil
+    }
+
+    private func positionFloatingPanelIfNeeded() {
+        guard !didPositionFloatingPanel else { return }
+        let size = DesktopFloatingButtonLayout.canvasSize
+        if panel.frame.origin != .zero {
+            floatingPanel.setFrameOrigin(NSPoint(
+                x: panel.frame.maxX - size.width,
+                y: panel.frame.maxY - size.height
+            ))
+        } else if let screen = NSScreen.screens.first(where: {
+            $0.frame.contains(NSEvent.mouseLocation)
+        }) ?? NSScreen.main {
+            let frame = screen.visibleFrame
+            floatingPanel.setFrameOrigin(NSPoint(
+                x: frame.maxX - size.width - 20,
+                y: frame.maxY - size.height - 20
+            ))
+        }
+        didPositionFloatingPanel = true
+    }
 }
 
 @MainActor
 final class FloatingStatusButtonView: NSVisualEffectView {
     var onActivate: (() -> Void)?
+    var onHoverEntered: (() -> Void)?
 
     private let statusDot = NSView()
     private let statusHalo = NSView()
@@ -716,6 +903,7 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     private let borderMaskLayer = CAShapeLayer()
     private let rippleLayer = CAShapeLayer()
     private let sheenLayer = CAGradientLayer()
+    private let glassHighlightLayer = CAGradientLayer()
     private var mouseDownLocation: NSPoint?
     private var windowOriginAtMouseDown: NSPoint?
     private var didDrag = false
@@ -727,17 +915,27 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         appearance = NSAppearance(named: .darkAqua)
-        material = .hudWindow
+        material = .popover
         blendingMode = .withinWindow
         state = .active
-        alphaValue = 0.92
+        alphaValue = 0.96
         wantsLayer = true
         layer?.cornerRadius = DesktopFloatingButtonLayout.cornerRadius
         layer?.cornerCurve = .continuous
-        layer?.borderWidth = 0.5
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.80).cgColor
+        layer?.borderWidth = 0.75
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.32).cgColor
+        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.52).cgColor
         layer?.masksToBounds = true
+
+        glassHighlightLayer.startPoint = CGPoint(x: 0.08, y: 0)
+        glassHighlightLayer.endPoint = CGPoint(x: 0.92, y: 1)
+        glassHighlightLayer.colors = [
+            NSColor.white.withAlphaComponent(0.24).cgColor,
+            NSColor.systemBlue.withAlphaComponent(0.08).cgColor,
+            NSColor.clear.cgColor,
+        ]
+        glassHighlightLayer.locations = [0, 0.42, 1]
+        layer?.addSublayer(glassHighlightLayer)
 
         ambientLayer.startPoint = CGPoint(x: 0, y: 0.5)
         ambientLayer.endPoint = CGPoint(x: 1, y: 0.5)
@@ -805,6 +1003,7 @@ final class FloatingStatusButtonView: NSVisualEffectView {
 
     override func layout() {
         super.layout()
+        glassHighlightLayer.frame = bounds
         ambientLayer.frame = CGRect(x: -bounds.width, y: 0, width: bounds.width * 2, height: bounds.height)
         borderContainerLayer.frame = bounds
         borderMaskLayer.frame = bounds
@@ -1068,6 +1267,11 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     override func mouseEntered(with event: NSEvent) {
         NSCursor.pointingHand.push()
         setHovering(true)
+        handleHoverEntered()
+    }
+
+    func handleHoverEntered() {
+        onHoverEntered?()
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -1182,9 +1386,6 @@ private final class DesktopQuotaSummaryView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.cornerRadius = 9
-        layer?.cornerCurve = .continuous
-        layer?.borderWidth = 0.5
 
         titleLabel.font = .systemFont(ofSize: 10, weight: .medium)
         titleLabel.textColor = .secondaryLabelColor
@@ -1220,21 +1421,13 @@ private final class DesktopQuotaSummaryView: NSView {
         titleLabel.stringValue = title
         valueLabel.stringValue = value
 
-        let color: NSColor
-        if let remainingPercent {
-            if remainingPercent <= 20 {
-                color = .systemRed
-            } else if remainingPercent < 50 {
-                color = .systemOrange
-            } else {
-                color = .controlAccentColor
-            }
+        if let remainingPercent, remainingPercent <= 20 {
+            valueLabel.textColor = .systemRed
+        } else if let remainingPercent, remainingPercent < 50 {
+            valueLabel.textColor = .systemOrange
         } else {
-            color = .tertiaryLabelColor
+            valueLabel.textColor = remainingPercent == nil ? .tertiaryLabelColor : .labelColor
         }
-        valueLabel.textColor = remainingPercent == nil ? .tertiaryLabelColor : .labelColor
-        layer?.backgroundColor = color.withAlphaComponent(0.08).cgColor
-        layer?.borderColor = color.withAlphaComponent(0.28).cgColor
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         setAccessibilityLabel("\(title)：\(value)")
@@ -1251,6 +1444,8 @@ private final class StatusCapsuleView: NSView {
         wantsLayer = true
         layer?.cornerRadius = 11
         layer?.cornerCurve = .continuous
+        layer?.borderWidth = 0.5
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.30).cgColor
         label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
         label.alignment = .center
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -1270,7 +1465,7 @@ private final class StatusCapsuleView: NSView {
         currentText = text
         label.stringValue = text
         label.textColor = color
-        layer?.backgroundColor = color.withAlphaComponent(0.10).cgColor
+        layer?.backgroundColor = color.withAlphaComponent(0.16).cgColor
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
         let spring = CASpringAnimation(keyPath: "transform.scale")
         spring.fromValue = 0.92
@@ -1288,28 +1483,33 @@ private final class StatusCapsuleView: NSView {
 }
 
 @MainActor
-private final class WorkItemRowView: NSVisualEffectView {
+private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
     var onSelected: (() -> Void)?
     var onDetailsSelected: (() -> Void)?
+    var onPromptSubmitted: ((String) -> Void)?
+    var onEditingChanged: ((Bool) -> Void)?
     var onOutputSelected: (() -> Void)? {
         didSet { outputButton.isHidden = onOutputSelected == nil }
     }
 
     private let actions = NSStackView()
     private let outputButton = NSButton()
+    private let promptField = NSTextField(string: "")
+    private let sendButton = NSButton()
+    private let conversationStatusLabel = NSTextField(labelWithString: "")
     private var tracking: NSTrackingArea?
 
-    init(item: WorkItem) {
+    init(item: WorkItem, lastAssistantResult: String? = nil) {
         super.init(frame: .zero)
-        material = .contentBackground
+        material = .sidebar
         blendingMode = .withinWindow
         state = .active
         wantsLayer = true
-        layer?.cornerRadius = 10
+        layer?.cornerRadius = 14
         layer?.cornerCurve = .continuous
         layer?.borderWidth = 0.5
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.45).cgColor
-        layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.5).cgColor
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.12).cgColor
         layer?.masksToBounds = true
 
         let indicator = NSView()
@@ -1349,9 +1549,6 @@ private final class WorkItemRowView: NSVisualEffectView {
         status.alignment = .right
         status.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let openButton = actionButton(symbol: "arrow.up.forward.app", toolTip: "打开任务")
-        openButton.target = self
-        openButton.action = #selector(openTask)
         outputButton.image = NSImage(systemSymbolName: "doc", accessibilityDescription: "打开产出")
         outputButton.isBordered = false
         outputButton.toolTip = "打开产出"
@@ -1360,24 +1557,80 @@ private final class WorkItemRowView: NSVisualEffectView {
         let detailsButton = actionButton(symbol: "info.circle", toolTip: "查看详情")
         detailsButton.target = self
         detailsButton.action = #selector(showDetails)
-        actions.setViews([openButton, outputButton, detailsButton], in: .leading)
+        actions.setViews([outputButton, detailsButton], in: .leading)
         actions.orientation = .horizontal
         actions.spacing = 3
         actions.alphaValue = 0
         actions.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let row = NSStackView(views: [indicator, textStack, NSView(), status, actions])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
-        NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 56),
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 11),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -11),
-            row.centerYAnchor.constraint(equalTo: centerYAnchor, constant: item.phaseCount == nil ? 0 : -2),
-        ])
+        let mainRow = NSStackView(views: [indicator, textStack, NSView(), status, actions])
+        mainRow.orientation = .horizontal
+        mainRow.alignment = .centerY
+        mainRow.spacing = 8
+        mainRow.translatesAutoresizingMaskIntoConstraints = false
+
+        if item.id.hasPrefix("codex:") {
+            conversationStatusLabel.stringValue = "上轮：\(lastAssistantResult ?? "暂无可显示结果")"
+            conversationStatusLabel.font = .systemFont(ofSize: 10)
+            conversationStatusLabel.textColor = .tertiaryLabelColor
+            conversationStatusLabel.lineBreakMode = .byTruncatingTail
+            conversationStatusLabel.maximumNumberOfLines = 1
+            conversationStatusLabel.toolTip = lastAssistantResult
+            conversationStatusLabel.setContentCompressionResistancePriority(
+                .defaultLow,
+                for: .horizontal
+            )
+
+            promptField.placeholderString = "继续该项目…"
+            promptField.font = .systemFont(ofSize: 11)
+            promptField.focusRingType = .none
+            promptField.delegate = self
+            promptField.target = self
+            promptField.action = #selector(submitPrompt)
+            promptField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+            sendButton.image = NSImage(
+                systemSymbolName: "arrow.up.circle.fill",
+                accessibilityDescription: "继续该项目"
+            )
+            sendButton.isBordered = false
+            sendButton.contentTintColor = .controlAccentColor
+            sendButton.target = self
+            sendButton.action = #selector(submitPrompt)
+            sendButton.toolTip = "继续该项目"
+
+            let inputRow = NSStackView(views: [promptField, sendButton])
+            inputRow.orientation = .horizontal
+            inputRow.alignment = .centerY
+            inputRow.spacing = 5
+            sendButton.widthAnchor.constraint(equalToConstant: 22).isActive = true
+
+            let stack = NSStackView(views: [mainRow, conversationStatusLabel, inputRow])
+            stack.orientation = .vertical
+            stack.alignment = .width
+            stack.spacing = 4
+            stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(stack)
+            NSLayoutConstraint.activate([
+                heightAnchor.constraint(equalToConstant: 96),
+                stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 11),
+                stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -11),
+                stack.topAnchor.constraint(equalTo: topAnchor, constant: 7),
+                stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -7),
+            ])
+        } else {
+            addSubview(mainRow)
+            NSLayoutConstraint.activate([
+                heightAnchor.constraint(equalToConstant: 56),
+                mainRow.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 11),
+                mainRow.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -11),
+                mainRow.centerYAnchor.constraint(
+                    equalTo: centerYAnchor,
+                    constant: item.phaseCount == nil ? 0 : -2
+                ),
+            ])
+        }
 
         if let count = item.phaseCount, count > 0 {
             let progress = StageProgressView(
@@ -1439,14 +1692,31 @@ private final class WorkItemRowView: NSVisualEffectView {
         CATransaction.commit()
     }
 
+    func updateConversationStatus(_ text: String, isBusy: Bool) {
+        conversationStatusLabel.stringValue = text
+        conversationStatusLabel.textColor = isBusy ? .controlAccentColor : .secondaryLabelColor
+        promptField.isEnabled = !isBusy
+        sendButton.isEnabled = !isBusy
+    }
+
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        onEditingChanged?(true)
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        onEditingChanged?(false)
+    }
+
     private func setHovering(_ hovering: Bool) {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.16
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             actions.animator().alphaValue = hovering ? 1 : 0
         }
-        layer?.borderColor = (hovering ? NSColor.controlAccentColor : NSColor.separatorColor)
-            .withAlphaComponent(hovering ? 0.42 : 0.45).cgColor
+        layer?.borderColor = (hovering ? NSColor.controlAccentColor : NSColor.white)
+            .withAlphaComponent(hovering ? 0.50 : 0.16).cgColor
+        layer?.backgroundColor = (hovering ? NSColor.controlAccentColor : NSColor.windowBackgroundColor)
+            .withAlphaComponent(hovering ? 0.12 : 0.12).cgColor
     }
 
     private func actionButton(symbol: String, toolTip: String) -> NSButton {
@@ -1457,9 +1727,14 @@ private final class WorkItemRowView: NSVisualEffectView {
         return button
     }
 
-    @objc private func openTask() { onSelected?() }
     @objc private func openOutput() { onOutputSelected?() }
     @objc private func showDetails() { onDetailsSelected?() }
+    @objc private func submitPrompt() {
+        let prompt = promptField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty, promptField.isEnabled else { return }
+        promptField.stringValue = ""
+        onPromptSubmitted?(prompt)
+    }
 }
 
 @MainActor
@@ -1493,15 +1768,27 @@ private final class StageProgressView: NSView {
 
 @MainActor
 private final class PanelBackgroundView: NSVisualEffectView {
+    var onHoverChanged: ((Bool) -> Void)?
+    private let tintLayer = CAGradientLayer()
+    private let highlightLayer = CAGradientLayer()
+    private var trackingAreaReference: NSTrackingArea?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        material = .popover
+        material = .underWindowBackground
         blendingMode = .behindWindow
         state = .active
         wantsLayer = true
-        layer?.cornerRadius = 14
+        layer?.cornerRadius = 22
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
+        tintLayer.startPoint = CGPoint(x: 0, y: 0)
+        tintLayer.endPoint = CGPoint(x: 1, y: 1)
+        highlightLayer.startPoint = CGPoint(x: 0.15, y: 0)
+        highlightLayer.endPoint = CGPoint(x: 0.85, y: 1)
+        highlightLayer.locations = [0, 0.35, 1]
+        layer?.addSublayer(tintLayer)
+        layer?.addSublayer(highlightLayer)
         updateColors()
     }
 
@@ -1512,10 +1799,55 @@ private final class PanelBackgroundView: NSVisualEffectView {
         updateColors()
     }
 
+    override func layout() {
+        super.layout()
+        tintLayer.frame = bounds
+        highlightLayer.frame = bounds
+    }
+
+    override func updateTrackingAreas() {
+        if let trackingAreaReference {
+            removeTrackingArea(trackingAreaReference)
+        }
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .mouseEnteredAndExited, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
+        trackingAreaReference = trackingArea
+        super.updateTrackingAreas()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChanged?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChanged?(false)
+    }
+
     private func updateColors() {
-        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.92).cgColor
-        layer?.borderWidth = 0.5
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let base = isDark ? NSColor.black : NSColor.white
+        tintLayer.colors = [
+            base.withAlphaComponent(isDark ? 0.34 : 0.38).cgColor,
+            NSColor.controlAccentColor.withAlphaComponent(isDark ? 0.12 : 0.08).cgColor,
+            base.withAlphaComponent(isDark ? 0.24 : 0.28).cgColor,
+        ]
+        highlightLayer.colors = [
+            NSColor.white.withAlphaComponent(isDark ? 0.20 : 0.54).cgColor,
+            NSColor.white.withAlphaComponent(isDark ? 0.06 : 0.20).cgColor,
+            NSColor.clear.cgColor,
+        ]
+        layer?.backgroundColor = base.withAlphaComponent(0.10).cgColor
+        layer?.borderWidth = 0.8
+        layer?.borderColor = NSColor.white.withAlphaComponent(isDark ? 0.28 : 0.52).cgColor
+        layer?.shadowColor = NSColor.black.withAlphaComponent(isDark ? 0.42 : 0.18).cgColor
+        layer?.shadowOpacity = 1
+        layer?.shadowRadius = 18
+        layer?.shadowOffset = CGSize(width: 0, height: -3)
     }
 }
 

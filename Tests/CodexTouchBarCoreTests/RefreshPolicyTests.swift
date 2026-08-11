@@ -8,17 +8,6 @@ import Testing
     #expect(RefreshPolicy.pollInterval(isDashboardVisible: false, hasActiveWork: false) == 30)
 }
 
-@Test func widgetReloadIntervalAdaptsToWorkState() {
-    let date = Date(timeIntervalSince1970: 1)
-    func item(_ status: WorkItemStatus) -> WorkItem {
-        WorkItem(id: status.rawValue, source: "test", title: "test", status: status, updatedAt: date)
-    }
-    #expect(RefreshPolicy.widgetReloadInterval(items: [item(.running)]) == 300)
-    #expect(RefreshPolicy.widgetReloadInterval(items: [item(.waiting)]) == 600)
-    #expect(RefreshPolicy.widgetReloadInterval(items: [item(.queued)]) == 300)
-    #expect(RefreshPolicy.widgetReloadInterval(items: [item(.idle)]) == 1_800)
-}
-
 @Test func refreshTimerRunsDuringTouchBarEventTracking() {
     #expect(RefreshPolicy.timerRunLoopMode == .common)
 }
