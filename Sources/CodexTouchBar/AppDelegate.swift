@@ -129,7 +129,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         desktopPanelController.onCodexPromptSubmitted = { [weak self] itemID, prompt in
             self?.submitCodexCardPrompt(itemID: itemID, prompt: prompt)
         }
-        desktopPanelController.onNewConversationSelected = { [weak self] in
+        desktopPanelController.onNewConversationSubmitted = { [weak self] prompt in
+            self?.submitNewConversation(prompt: prompt)
+        }
+        desktopPanelController.onNewConversationDirectorySelected = { [weak self] in
             self?.chooseProjectForNewConversation()
         }
         desktopPanelController.onVisibilityChanged = { [weak self] visible in
@@ -173,11 +176,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func configureStatusItem() {
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
-            button.image = NSImage(
-                systemSymbolName: "rectangle.and.hand.point.up.left.fill",
-                accessibilityDescription: "AI 工作岛"
-            ) ?? NSImage(systemSymbolName: "terminal.fill", accessibilityDescription: "AI 工作岛")
-            button.image?.isTemplate = true
+            button.image = StatusItemIconRenderer.makeImage()
         }
 
         let menu = NSMenu()
@@ -504,47 +503,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenuItem?.title = message
     }
 
+    private var newConversationProjectURL: URL {
+        if let storedPath = UserDefaults.standard.string(forKey: "newConversationProjectPath"),
+           FileManager.default.fileExists(atPath: storedPath) {
+            return URL(fileURLWithPath: storedPath, isDirectory: true)
+        }
+        return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+    }
+
     private func chooseProjectForNewConversation() {
         guard !conversationInFlight else {
             showTransientStatus("新会话正在创建")
             return
         }
         let chooser = NSOpenPanel()
-        chooser.title = "为新 Codex 会话选择项目"
+        chooser.title = "选择新任务工作目录"
         chooser.prompt = "选择项目"
-        chooser.message = "新会话只以所选目录作为工作目录。"
+        chooser.message = "后续直接输入的新任务都会使用此目录。"
         chooser.canChooseFiles = false
         chooser.canChooseDirectories = true
         chooser.allowsMultipleSelection = false
         chooser.canCreateDirectories = true
         NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
         guard chooser.runModal() == .OK, let projectURL = chooser.url else { return }
-
-        let promptField = NSTextField(string: "")
-        promptField.placeholderString = "输入首条指令…"
-        promptField.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
-        let alert = NSAlert()
-        alert.messageText = "新建 · \(projectURL.lastPathComponent)"
-        alert.informativeText = "首条指令将以所选目录作为工作目录。"
-        alert.accessoryView = promptField
-        alert.addButton(withTitle: "创建会话")
-        alert.addButton(withTitle: "取消")
-        alert.window.initialFirstResponder = promptField
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let prompt = promptField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !prompt.isEmpty else {
-            showTransientStatus("首条指令不能为空")
-            NSSound.beep()
-            return
-        }
-        submitNewConversation(prompt: prompt, projectURL: projectURL)
+        UserDefaults.standard.set(projectURL.path, forKey: "newConversationProjectPath")
+        showTransientStatus("新任务将创建在 \(projectURL.lastPathComponent)")
     }
 
-    private func submitNewConversation(prompt: String, projectURL: URL) {
+    private func submitNewConversation(prompt: String, projectURL: URL? = nil) {
         guard !conversationInFlight else {
             showTransientStatus("新会话正在创建")
             return
         }
+        let projectURL = projectURL ?? newConversationProjectURL
         conversationInFlight = true
         desktopPanelController.setNewConversationBusy(true)
         showTransientStatus("正在创建 \(projectURL.lastPathComponent) 会话")

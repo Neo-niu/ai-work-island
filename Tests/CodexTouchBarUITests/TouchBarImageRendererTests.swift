@@ -131,8 +131,36 @@ import Testing
     #expect(DesktopPanelLayout.contentSize(visibleItemCount: 0).width == 372)
     #expect(DesktopPanelLayout.contentSize(visibleItemCount: 1).width == 372)
     #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7).width == 372)
-    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7).height == 578)
-    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7, sectionCount: 4).height == 666)
+    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7).height == 618)
+    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7, sectionCount: 4).height == 700)
+}
+
+@Test func conversationCardUsesTheAvailablePanelWidth() {
+    #expect(DesktopPanelLayout.contentWidth == 344)
+    #expect(DesktopPanelLayout.conversationContentWidth == 322)
+}
+
+@Test func desktopPanelResizePolicyAllowsAUsefulWidthAndHeightRange() {
+    #expect(DesktopPanelResizePolicy.minimumFrameSize == NSSize(width: 320, height: 260))
+    #expect(DesktopPanelResizePolicy.maximumFrameSize == NSSize(width: 620, height: 746))
+    #expect(
+        DesktopPanelResizePolicy.clampedFrameSize(NSSize(width: 280, height: 900))
+            == NSSize(width: 320, height: 746)
+    )
+    #expect(DesktopPanelResizePolicy.shouldAutomaticallyFit(hasUserPreferredSize: false))
+    #expect(!DesktopPanelResizePolicy.shouldAutomaticallyFit(hasUserPreferredSize: true))
+}
+
+@Test func desktopPanelUsesTheSelectedSmokeGrayPalette() {
+    let base = DesktopPanelPalette.base.usingColorSpace(.sRGB)
+    let card = DesktopPanelPalette.card.usingColorSpace(.sRGB)
+    let input = DesktopPanelPalette.input.usingColorSpace(.sRGB)
+
+    #expect(base?.redComponent == 48.0 / 255.0)
+    #expect(base?.greenComponent == 50.0 / 255.0)
+    #expect(base?.blueComponent == 55.0 / 255.0)
+    #expect(card?.redComponent == 58.0 / 255.0)
+    #expect(input?.redComponent == 39.0 / 255.0)
 }
 
 @Test func floatingStatusButtonUsesACompactPillHitTarget() {
@@ -255,6 +283,88 @@ import Testing
     #expect(DesktopFloatingButtonMotion.transitionDuration >= 0.55)
     #expect(DesktopFloatingButtonMotion.ambientCycleDuration > DesktopFloatingButtonMotion.transitionDuration)
     #expect(DesktopFloatingButtonMotion.borderCycleDuration > 1)
+    #expect(DesktopFloatingButtonMotion.carouselInterval == 4)
+}
+
+@Test func floatingStatusCarouselIncludesEveryAvailableQuota() {
+    let recordedAt = Date(timeIntervalSince1970: 100)
+    let snapshot = WorkStatusSnapshot(
+        items: [],
+        automationIssues: [],
+        codexShortTermLimit: WeeklyLimitUsage(
+            usedPercent: 29,
+            resetsAt: nil,
+            recordedAt: recordedAt
+        ),
+        codexWeeklyLimit: WeeklyLimitUsage(
+            usedPercent: 42,
+            resetsAt: nil,
+            recordedAt: recordedAt
+        ),
+        companyQuota: CompanyModelQuota(totalUSD: 20, usedUSD: 5, resetsAt: nil)
+    )
+
+    let pages = DesktopFloatingButtonPresentation.carousel(for: snapshot)
+
+    #expect(pages.map(\.displayText) == ["空闲", "5时 71%", "周 58%", "公司 $15"])
+    #expect(pages[1].tintColor == .systemTeal)
+    #expect(pages[2].tintColor == .systemIndigo)
+    #expect(pages[3].tintColor == .systemPurple)
+    #expect(pages.dropFirst().map(\.pulses) == [false, false, false])
+}
+
+@Test func floatingStatusCarouselKeepsAttentionVisibleInsteadOfRotatingQuota() {
+    let waiting = WorkItem(
+        id: "waiting",
+        source: "Codex",
+        title: "等待确认",
+        status: .waiting,
+        updatedAt: Date()
+    )
+    let pages = DesktopFloatingButtonPresentation.carousel(for: WorkStatusSnapshot(
+        items: [waiting],
+        automationIssues: [],
+        codexWeeklyLimit: WeeklyLimitUsage(
+            usedPercent: 30,
+            resetsAt: nil,
+            recordedAt: Date()
+        )
+    ))
+
+    #expect(pages.map(\.displayText) == ["1 等待你"])
+}
+
+@MainActor
+@Test func floatingStatusButtonAdvancesAndWrapsTheQuotaCarousel() {
+    let view = FloatingStatusButtonView(
+        frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.size)
+    )
+    let recordedAt = Date(timeIntervalSince1970: 100)
+    let snapshot = WorkStatusSnapshot(
+        items: [],
+        automationIssues: [],
+        codexShortTermLimit: WeeklyLimitUsage(
+            usedPercent: 29,
+            resetsAt: nil,
+            recordedAt: recordedAt
+        ),
+        codexWeeklyLimit: WeeklyLimitUsage(
+            usedPercent: 42,
+            resetsAt: nil,
+            recordedAt: recordedAt
+        )
+    )
+    view.update(snapshot: snapshot)
+
+    #expect(view.displayedTextForTesting() == "空闲")
+    view.advanceCarousel()
+    #expect(view.displayedTextForTesting() == "5时 71%")
+    view.update(snapshot: snapshot)
+    #expect(view.displayedTextForTesting() == "5时 71%")
+    view.advanceCarousel()
+    #expect(view.displayedTextForTesting() == "周 58%")
+    view.advanceCarousel()
+    #expect(view.displayedTextForTesting() == "空闲")
 }
 
 @MainActor

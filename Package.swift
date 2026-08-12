@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "CodexTouchBar",
+    name: "AIWorkIsland",
     platforms: [
         .macOS(.v13),
     ],
