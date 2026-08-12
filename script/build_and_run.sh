@@ -15,6 +15,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 SCRATCH_DIR="${CODEX_HERMES_BUILD_DIR:-/tmp/codex-hermes-touch-bar-build}"
 APP_BUNDLE="$DIST_DIR/$DISPLAY_NAME.app"
+APP_ARCHIVE="$DIST_DIR/$DISPLAY_NAME.app.zip"
 INSTALLED_APP_BUNDLE="/Applications/$DISPLAY_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
@@ -57,6 +58,7 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 cp "$ROOT_DIR/Resources/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
+/usr/bin/ditto "$ROOT_DIR/Resources/AppIcon.icon" "$APP_RESOURCES/AppIcon.icon"
 chmod +x "$APP_BINARY"
 
 cat >"$INFO_PLIST" <<PLIST
@@ -75,6 +77,8 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>CFBundleIconName</key>
   <string>AppIcon</string>
   <key>CFBundleShortVersionString</key>
   <string>0.5.15</string>
@@ -117,6 +121,20 @@ else
   codesign --force --sign - -r="$ADHOC_REQUIREMENT" "$INSTALLED_APP_BUNDLE" >/dev/null
 fi
 /usr/bin/codesign --verify --deep --strict "$INSTALLED_APP_BUNDLE"
+
+# Keep the signed dist bundle for delivery without exposing it as a second app
+# in Launchpad, Spotlight, or Open With. Only the /Applications copy is active.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+"$LSREGISTER" -u "$APP_BUNDLE" >/dev/null 2>&1 || true
+"$LSREGISTER" -f "$INSTALLED_APP_BUNDLE" >/dev/null 2>&1 || true
+
+# Archive and remove the launchable dist copy so macOS cannot register or run it
+# alongside the canonical /Applications installation. Debug mode still keeps it.
+if [[ "$MODE" != "--debug" && "$MODE" != "debug" ]]; then
+  /bin/rm -f "$APP_ARCHIVE"
+  /usr/bin/ditto -c -k --keepParent "$APP_BUNDLE" "$APP_ARCHIVE"
+  /bin/rm -rf "$APP_BUNDLE"
+fi
 
 open_app() {
   /usr/bin/open "$INSTALLED_APP_BUNDLE"

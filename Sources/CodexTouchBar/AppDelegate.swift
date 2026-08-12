@@ -151,6 +151,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         desktopPanelController.onItemOutputSelected = { [weak self] item in
             self?.openWorkItemOutput(item)
         }
+        desktopPanelController.onCodexTransferSelected = { [weak self] item in
+            self?.transferWorkItemToCodex(item)
+        }
         desktopPanelController.onCodexPromptSubmitted = { [weak self] itemID, prompt in
             self?.submitCodexCardPrompt(itemID: itemID, prompt: prompt)
         }
@@ -457,7 +460,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showTransientStatus("Codex 未接受会话跳转")
             return
         }
+        markThreadViewed(thread.id)
+        requestRefresh()
         showTransientStatus(successMessage)
+    }
+
+    private func markThreadViewed(_ threadID: String) {
+        let file = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Application Support/Codex Hermes Touch Bar/viewed-thread-ids.json"
+            )
+        try? ViewedThreadStore.markViewed(threadID: threadID, file: file)
     }
 
     private func openWorkItem(_ item: WorkItem) {
@@ -484,6 +497,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         showTransientStatus("该任务没有可打开的产出")
+    }
+
+    private func transferWorkItemToCodex(_ item: WorkItem) {
+        guard item.id.hasPrefix("codex:"),
+              let thread = latestGroups?.flatMap(\.threads).first(where: {
+                  "codex:\($0.id)" == item.id
+              }) else {
+            showTransientStatus("该任务当前无法转到 Codex")
+            return
+        }
+        let released = CodexConversationBridge.releaseWorkIslandOwnership(threadID: thread.id)
+        showTransientStatus(released ? "正在释放工作岛占用…" : "正在转到 Codex…")
+        DispatchQueue.main.asyncAfter(deadline: .now() + (released ? 0.6 : 0.1)) { [weak self] in
+            self?.openThread(thread, successMessage: "已转到 Codex")
+        }
     }
 
     private func showWorkItemIssue(_ item: WorkItem) {
@@ -578,7 +606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showTransientStatus("新任务将创建在 \(projectURL.lastPathComponent)")
     }
 
-    private func submitNewConversation(prompt: String, projectURL: URL? = nil) {
+    private func submitNewConversation(prompt: CodexPrompt, projectURL: URL? = nil) {
         guard !conversationInFlight else {
             showTransientStatus("新会话正在创建")
             return
@@ -597,6 +625,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 showTransientStatus("\(projectURL.lastPathComponent) 会话已创建")
                 requestRefresh()
             } catch {
+                Self.removeTemporaryImages(prompt.imageURLs)
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                 showTransientStatus(message, duration: 15)
                 NSSound.beep()
@@ -606,7 +635,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func submitCodexCardPrompt(itemID: String, prompt: String) {
+    private func submitCodexCardPrompt(itemID: String, prompt: CodexPrompt) {
         guard !cardConversationsInFlight.contains(itemID) else {
             desktopPanelController.updateCodexCardStatus(
                 itemID: itemID,
@@ -630,6 +659,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         Task { [weak self] in
             guard let self else { return }
+            defer { Self.removeTemporaryImages(prompt.imageURLs) }
             do {
                 let result = try await CodexConversationBridge.send(
                     prompt: prompt,
@@ -652,6 +682,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSSound.beep()
             }
             cardConversationsInFlight.remove(itemID)
+        }
+    }
+
+    private static func removeTemporaryImages(_ urls: [URL]) {
+        for url in urls where url.deletingLastPathComponent().lastPathComponent == "AIWorkIsland-PastedImages" {
+            try? FileManager.default.removeItem(at: url)
         }
     }
 

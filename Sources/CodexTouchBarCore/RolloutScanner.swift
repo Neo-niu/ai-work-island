@@ -42,6 +42,8 @@ public actor RolloutScanner {
     private let stateDatabase: URL?
     private let globalStateFile: URL?
     private let sessionIndexFile: URL?
+    private let retainedThreadFile: URL?
+    private let viewedThreadFile: URL?
     private let recentFileInterval: TimeInterval
     private let activeStaleInterval: TimeInterval
     private var cache: [URL: CachedRollout] = [:]
@@ -56,6 +58,10 @@ public actor RolloutScanner {
             .appendingPathComponent(".codex/.codex-global-state.json"),
         sessionIndexFile: URL? = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex/session_index.jsonl"),
+        retainedThreadFile: URL? = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codex Hermes Touch Bar/work-island-thread-ids.json"),
+        viewedThreadFile: URL? = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codex Hermes Touch Bar/viewed-thread-ids.json"),
         recentFileInterval: TimeInterval = 7 * 24 * 60 * 60,
         activeStaleInterval: TimeInterval = 30 * 60
     ) {
@@ -63,6 +69,8 @@ public actor RolloutScanner {
         self.stateDatabase = stateDatabase
         self.globalStateFile = globalStateFile
         self.sessionIndexFile = sessionIndexFile
+        self.retainedThreadFile = retainedThreadFile
+        self.viewedThreadFile = viewedThreadFile
         self.recentFileInterval = recentFileInterval
         self.activeStaleInterval = activeStaleInterval
     }
@@ -126,7 +134,11 @@ public actor RolloutScanner {
         ]
         let cutoff = Date().addingTimeInterval(-recentFileInterval)
         let globalState = globalStateValues(fileManager: fileManager)
-        let unreadThreadIDs = globalState.unreadThreadIDs
+        let unreadThreadIDs = globalState.unreadThreadIDs.union(retainedThreadIDs(fileManager: fileManager))
+        let viewedAtByThreadID = ViewedThreadStore.viewedAtByThreadID(
+            file: viewedThreadFile,
+            fileManager: fileManager
+        )
         let currentThreadNames = sessionIndexThreadNames(fileManager: fileManager)
         var seenURLs = Set<URL>()
         var shortTermLimits: [WeeklyLimitUsage] = []
@@ -148,7 +160,9 @@ public actor RolloutScanner {
                 weeklyLimits.append(contentsOf: records.compactMap(\.weeklyLimit))
                 let activeRecords = records.filter(isRecentlyActive)
                 let activeStartedAt = activeRecords.map(\.thread.startedAt).min()
-                let isUnread = activeStartedAt == nil && unreadThreadIDs.contains(root.id)
+                let isUnread = activeStartedAt == nil
+                    && unreadThreadIDs.contains(root.id)
+                    && root.updatedAt > (viewedAtByThreadID[root.id] ?? .distantPast)
                 let lastAssistantResult = records
                     .filter { $0.thread.id == root.id && $0.thread.lastAssistantResult != nil }
                     .max { $0.thread.updatedAt < $1.thread.updatedAt }?
@@ -187,7 +201,9 @@ public actor RolloutScanner {
                 if let shortTermLimit = record.shortTermLimit {
                     shortTermLimits.append(shortTermLimit)
                 }
-                let isUnread = !record.isActive && unreadThreadIDs.contains(record.thread.id)
+                let isUnread = !record.isActive
+                    && unreadThreadIDs.contains(record.thread.id)
+                    && record.thread.updatedAt > (viewedAtByThreadID[record.thread.id] ?? .distantPast)
                 let isActive = isRecentlyActive(record)
                 guard isActive || isUnread else {
                     continue
@@ -296,6 +312,15 @@ public actor RolloutScanner {
         )
         lastGlobalStateValues = stateValues
         return stateValues
+    }
+
+    private func retainedThreadIDs(fileManager: FileManager) -> Set<String> {
+        guard let retainedThreadFile,
+              let data = fileManager.contents(atPath: retainedThreadFile.path),
+              let ids = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+        return Set(ids)
     }
 
     private func cachedRecord(

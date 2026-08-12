@@ -1,0 +1,113 @@
+{
+  "color-space-for-untagged-svg-colors" : "display-p3",
+  "fill-specializations" : [
+    {
+      "value" : "system-light"
+    },
+    {
+      "appearance" : "dark",
+      "value" : "system-dark"
+    }
+  ],
+  "groups" : [
+    {
+      "blur-material" : 0,
+      "layers" : [
+        {
+          "fill" : {
+            "automatic-gradient" : "display-p3:0.22000,0.50000,1.00000,1.00000"
+          },
+          "glass" : true,
+          "image-name" : "03-ready.svg",
+          "name" : "Ready"
+        },
+        {
+          "fill" : {
+            "automatic-gradient" : "display-p3:0.12000,0.90000,0.96000,1.00000"
+          },
+          "glass" : true,
+          "image-name" : "04-running.svg",
+          "name" : "Running"
+        },
+        {
+          "fill" : {
+            "automatic-gradient" : "display-p3:1.00000,0.63000,0.14000,1.00000"
+          },
+          "glass" : true,
+          "image-name" : "05-attention.svg",
+          "name" : "Attention"
+        }
+      ],
+      "lighting" : "individual",
+      "name" : "03 Status signals",
+      "shadow" : {
+        "kind" : "layer-color",
+        "opacity" : 0.42
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0
+      }
+    },
+    {
+      "blur-material" : 0.12,
+      "layers" : [
+        {
+          "fill" : {
+            "linear-gradient" : [
+              "display-p3:0.08000,0.11000,0.17000,0.90000",
+              "display-p3:0.01000,0.02000,0.05000,0.97000"
+            ]
+          },
+          "glass" : true,
+          "image-name" : "02-work-island.svg",
+          "name" : "Work island"
+        }
+      ],
+      "lighting" : "combined",
+      "name" : "02 Work island",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.36
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.18
+      }
+    },
+    {
+      "blur-material" : 0.34,
+      "layers" : [
+        {
+          "fill" : {
+            "linear-gradient" : [
+              "display-p3:0.76000,0.82000,0.92000,0.72000",
+              "display-p3:0.17000,0.21000,0.29000,0.86000"
+            ]
+          },
+          "glass" : true,
+          "image-name" : "01-glass-enclosure.svg",
+          "name" : "Glass enclosure"
+        }
+      ],
+      "lighting" : "combined",
+      "name" : "01 Glass enclosure",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.18
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.46
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "squares" : [
+      "macOS"
+    ]
+  }
+}

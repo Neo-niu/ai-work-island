@@ -12,15 +12,18 @@
 
 - 项目元数据名称为“AI 工作岛”（SwiftPM：`AIWorkIsland`）；为兼容既有设置、辅助功能授权和自动化链路，Bundle ID、可执行文件名及 `~/Library/Application Support/Codex Hermes Touch Bar/` 兼容数据目录不改名。
 - 桌面面板顶部提供常驻“新任务”输入框，回车或发送按钮直接创建会话；默认工作目录为“文稿”，也可通过文件夹按钮选择并持久化为后续新任务目录。
+- “新任务”和卡片内“继续该项目”输入框均支持 `Command-V` 粘贴剪贴板图片；输入框显示图片数量，允许仅图片发送。输入框没有文字时按 Delete/退格会逐张删除最后粘贴的图片。图片暂存于系统临时目录，通过 Codex `localImage` 输入随文字一并发送，发送或删除后清理，不持久化到项目或会话状态文件。
 - Swift 6 + AppKit。
 - 用户可见名称统一为“AI 工作岛”，安装路径为 `/Applications/AI 工作岛.app`。为保留既有设置、辅助功能授权和自动化链路，Bundle ID、可执行文件名及 `~/Library/Application Support/Codex Hermes Touch Bar/` 兼容数据目录不改名。
 - `WorkStatusHub` 将 Codex 线程与自动化任务统一为 `WorkItem`；桌面面板和 Touch Bar 继续各自按信息密度展示。
 - `DesktopStatusPanelController` 提供跨桌面空间、可移动的桌面面板；默认使用始终置顶浮窗，可从菜单切换为置于普通窗口后方。最多展示 7 项任务，等待确认、异常和失联优先。Codex 额度只在有数据时显示，公司额度不可用时隐藏。
-- 桌面面板内置项目卡片对话：每张可见 Codex 卡片都有独立输入框，发送时按该卡片稳定 thread ID 续接对应会话；卡片从 rollout 只读提取最近一次 `final_answer`，去除 Markdown/记忆引用并压缩为单行“上轮”摘要。标题栏 `＋` 按需打开目录选择器和首条指令弹窗。桌面端已有任务通过 `~/.codex/ipc/ipc.sock` 的 thread-follower 通道发送；新会话通过 `codex app-server --stdio` 的 `thread/start` 与 `turn/start` 实现。最近结果只保留在当前进程内存，不额外持久化 Token、Cookie 或对话正文。
+- 桌面面板内置项目卡片对话：每张可见 Codex 卡片都有独立输入框，发送时按该卡片稳定 thread ID 续接对应会话；卡片从 rollout 只读提取最近一次 `final_answer`，去除 Markdown/记忆引用并压缩为单行“上轮”摘要。桌面端已有任务通过 `~/.codex/ipc/ipc.sock` 的 thread-follower 通道发送；新会话通过官方 Codex App Server 的 `thread/start` 与 `turn/start` 创建，固定 `serviceName=codex-desktop`、`threadSource=vscode`、`ephemeral=false`，保证进入 Codex 持久线程索引。工作岛创建的 thread ID 最多保留 100 个在兼容数据目录的 `work-island-thread-ids.json`，完成后继续显示为待读，避免被仅“活跃或未读”扫描规则过滤；不保存 Token、Cookie 或对话正文。
 - 会话卡片始终占满面板可用内容区，悬浮操作按钮仅在鼠标进入卡片时参与布局，静止态不抢占标题和项目路径宽度。面板默认宽度为 372pt，四边和四角支持 AppKit 原生拖动，范围为 320×260pt 至 620×746pt；用户尺寸持久化，内容刷新不覆盖，收成胶囊后再次展开仍恢复该尺寸。
 - 桌面面板不再提供“缩小为悬浮按钮”入口，应用启动时默认显示 108×38pt、跨空间、可拖动的迷你灵动岛胶囊，外层窗口使用 120×50pt 透明动画画布。运行态使用状态点呼吸、外圈扩散、背景光带和无缝旋转渐变描边；状态变化使用文字推入、状态点弹跳、色环扩散、胶囊弹性和边框闪光；缩小与恢复使用窗口交叉淡化及胶囊弹簧进出。悬停与按压保留缩放反馈，全部动效遵守系统“减少动态效果”。点击胶囊只恢复面板，不打开最近完成任务的 `openURL`、`outputPath` 或 Finder；外部目标必须由任务卡上的明确操作打开。
 - 迷你胶囊每 4 秒按“任务状态 → Codex 5 小时额度 → Codex 周额度 → 公司剩余美元”轮播，缺失额度自动跳过；额度沿用 `WorkStatusSnapshot` 与面板相同的只读来源和失效结果，不额外缓存。异常、失联或等待确认时锁定任务状态，不轮播额度。额度轮播只做文字推入，不触发整颗胶囊的状态弹跳；正常额度使用青/靛/紫，低于 50% 橙色、20% 及以下红色。
 - 主面板与迷你胶囊拖到当前屏幕的可用区域边缘 18pt 内时自动贴边；两者共享右上角锚点，展开、收起与面板尺寸变化均同步位置。胶囊按可见的 108×38pt 本体贴边，保留其 6pt 透明动画画布在屏幕外侧；面板背景空白处使用原生窗口拖动。
+- 点击或悬停胶囊展开面板后，只要鼠标离开面板都会在 0.5 秒后自动回缩。打开 Codex 会话时会在本地 `viewed-thread-ids.json` 记录查看时间；该会话当前结果立即退出“等待你”，只有产生时间更新的新结果后才重新进入待读。
+- 每张 Codex 任务卡悬停后提供“转到 Codex”。工作岛自建任务仍在执行时，按钮先关闭该 thread 对应的后台 App Server、释放工作岛占用，再打开同一 Codex thread；已无工作岛占用时直接打开。后台进程按 thread ID 登记，任务自然结束和主动转移都会清理登记，避免误杀其他任务。
 - `等待你` 分组固定排在所有分组之前、始终展开且不能折叠；其中的任务逐条显示并可占满 7 个可见位置，不与运行中或最近完成任务合并。
 - 桌面面板通过 `DesktopPanelContentSignature` 忽略仅刷新时间或任务 `updatedAt` 变化的轮询；额度使用独立摘要视图原位更新，不重建任务行。标题、详情、状态、阶段、按钮目标或分组确实变化时才刷新任务内容。
 - `AutomationStatusScanner` 只读 `~/Library/Application Support/Codex Hermes Touch Bar/automation-status/*.json`；运行状态默认 30 分钟未更新转为失联，可由 `staleAfterSeconds` 覆盖或设 0 关闭。
@@ -44,6 +47,7 @@
 - Touch Bar 被关闭按钮收起后，再次打开 `/Applications/AI 工作岛.app` 会通知既有后台进程强制恢复仪表盘，不再被单实例保护静默吞掉。
 - “处理中”和“待读”是两个独立点击目标；点击后按各自列表循环，通过 Codex 主窗口的“搜索聊天”命令按精确标题打开会话。不要恢复外部 `codex://threads/<id>` 路径：深链会广播到隐藏的 avatar overlay，产生错误的“会话不存在”提示。
 - App 图标母版位于 `Resources/AppIcon-master.png`，构建使用 `Resources/AppIcon.icns`；银色连续圆角外壳由黑色 Touch Bar 横带贯穿，中央鼓起为含三枚状态点的工作岛。菜单栏图标由 `StatusItemIconRenderer` 以同一结构绘制成 18pt 系统模板图标，自动适配浅色与深色菜单栏；`script/generate_app_icon.sh` 可从母版重建全尺寸 ICNS。
+- macOS 27 动态图标工程位于 `Resources/AppIcon.icon/`：烟灰玻璃外壳、中央工作岛、蓝/青/琥珀状态点均为独立 SVG 图层，`icon.json` 定义分组光照、specular、blur material、translucency、阴影及 light/dark 系统底色。工程已由 Apple Icon Composer 2.0 打开、预览和保存规范化；构建同时打包原生 `.icon`、声明 `CFBundleIconName=AppIcon`，并保留由官方 Default rendition 生成的 ICNS 供 macOS 26 及旧系统回退。
 - 构建目录默认放 `/tmp`，避免 iCloud 路径中的 SwiftPM 锁竞争。
 - 构建产物保留在 `dist`，实际运行副本安装到 `/Applications`，避免 iCloud 改写 Bundle 元数据。
 - 签名先在系统临时目录完成，再复制回 `dist` 和 `/Applications`；否则文件提供器会立即给 app 根目录补写扩展属性，导致 `codesign` 报 resource fork/Finder information 错误。
@@ -51,6 +55,17 @@
 
 ## 最近回归
 
+- 2026-08-12：新增任务卡“转到 Codex”，解决工作岛持有 App Server 时 Codex 只能提示“任务在其他位置运行”且看不到阶段进度的问题。实查旧安装版主进程下有 4 个独立 `codex app-server --stdio`，已持续约 13–58 分钟；安装新版后旧占用全部退出。113 项测试、构建安装、严格签名、自动化诊断和 `git diff --check` 通过；安装版辅助功能树回读到按钮描述“停止工作岛占用并转到 Codex”。四个旧任务并非完全未执行，均已有 commentary，其中两个已推进到文件变更请求；因安装重启被标记为 `interrupted`，现在可逐项用“转到 Codex”打开后继续。
+- 2026-08-12：修复胶囊点击展开后不再自动回缩，以及打开 ChatGPT/Codex 会话后任务仍永久显示“等待中”。点击和悬停现在统一进入可自动回缩生命周期；工作岛不再把自建 thread ID 永久等同于未读，而是按本地查看时间与会话结果更新时间比较，新结果仍会重新提醒。新增两项保留测试，113 项测试通过。
+- 2026-08-12：修复工作岛新会话完成后消失。根因有两层：CLI 创建的线程来源不符合 Codex 桌面显示口径；即使改为 App Server，完成线程也会因未读集合缺失被工作岛过滤。新建改为持久 `vscode`/`codex-desktop` 线程，并维护工作岛 thread ID 注册表。安装版真实提交“工作岛完成后保留测试”，rollout 回读 `task_complete / 已保留`，SQLite 回读 `source=vscode`、`thread_source=vscode`、`archived=0`、preview 非空，完成后工作岛仍显示为“等待你”。111 项测试通过。
+- 2026-08-12：完成安装版图片会话闭环。首次真实回读发现图片可粘贴并显示 `图×1`，但 field editor 吞掉 Backspace/Delete；现由两个输入框 delegate 转发 `deleteBackward:`/`deleteForward:`，安装版确认 `图×1` 随 Backspace 消失。首次带图发送又发现 `codex exec --image` 的可变参数会吞掉后续文字，现以 `--` 终止图片参数。最终真实窗口提交后输入栏立即恢复、运行数从 1 增至 2，rollout 同时读回 `input_image`、`local_images`、文字指令和图片识别回复；后台进程退出且临时 PNG 已清理。111 项测试、构建安装、严格签名和 `git diff --check` 通过。
+- 2026-08-12：修复“新任务”长期停在“正在创建”并连带禁用图片输入。根因是独立 `codex app-server --stdio` 与已运行的 Codex 桌面端发生 active-writer 竞争，可能在 `thread/start` 前无限等待；新会话现改由官方 `codex exec --json -C <目录> --image <图片>` 创建持久会话，进程启动后立即恢复输入栏，后台排空输出并在结束时清理临时图片。既有卡片续接仍走桌面 IPC。安装版真实窗口提交“只回复 OK”后约 1 秒输入框恢复、运行任务由 1 增至 2，并出现 Documents 新任务卡。
+- 2026-08-12：修复两个“AI 工作岛”可同时运行。实测 PID 3456 来自项目 `dist/AI 工作岛.app`，PID 96254 来自 `/Applications/AI 工作岛.app`；仅注销 Launch Services 不足以阻止用户再次双击 dist。构建脚本现在将签名后的 dist 副本归档为 `dist/AI 工作岛.app.zip` 后删除可启动的 `.app`，只保留 `/Applications` 运行副本；debug 模式例外。
+- 2026-08-12：完成 macOS 27 原生分层 App Icon。Icon Composer 2.0 在 Design Generation 27 下回读 5 图层/3 分组；首次预览发现图层顺序导致状态点被遮挡，重排为“状态点 → 工作岛 → 玻璃外壳”后，Default、Dark、TintedDark 三种官方 `ictool` rendition 均清晰。安装包同时包含校验一致的 `AppIcon.icon` 与回退 `AppIcon.icns`，Info.plist 同时声明 `CFBundleIconName`/`CFBundleIconFile`；110 项测试、严格签名、进程和自动化诊断通过。当前系统为 macOS 26.6，动态环境响应需在 macOS 27 升级后再做最终系统级回读。
+- 2026-08-12：GitHub README 收敛为产品定位、核心能力、安装、自动化接入、隐私边界与已知限制，删除重复的实现细节枚举。新增 `docs/media/ai-work-island-demo.gif`，由真实安装版胶囊和面板回读生成，不包含 Token、Cookie、录音或转写稿。
+
+- 2026-08-12：App Icon 按 macOS 27 Liquid Glass 语言重绘，保留横向工作岛与蓝/青/琥珀三枚状态点，将厚重金属外壳收敛为统一的烟灰透明玻璃容器，增加克制的镜面高光、折射与内层深度。1024px PNG 母版和全尺寸 ICNS 已更新并安装。
+- 2026-08-12：会话输入新增剪贴板图片支持，覆盖新建会话与卡片定向续接；App Server 和桌面 IPC 均发送 `localImage` 输入，输入框无文字时 Delete/退格逐张移除图片，临时 PNG 在删除或请求结束后清理。110 项 Swift 测试通过，其中包含真实 `NSPasteboard` 图片、`Command-V` 与 Delete 事件回归；安装版辅助功能回读确认新任务与卡片输入框均正常显示。
 - 2026-08-12：会议纪要转写状态接入现有自动化卡片协议，按 4 阶段展示“转写 → 生成纪要 → 写入 Obsidian → 推送排队”，并区分监听中、已转写待生成、完成与异常。真实服务重启后发布 `idle / 会议纪要监听中 / 暂无待处理录音`，安装版 `--diagnose-automation` 读回成功。
 - 2026-08-12：修复显示器布局或面板高度变化后迷你胶囊可能继承越过屏幕上沿的旧锚点。每次进入收起态都会按当前屏幕 `visibleFrame` 将胶囊可见本体约束回屏幕内，再反向同步主面板锚点。108 项 Swift 测试、构建安装、严格签名和 `git diff --check` 通过；安装版 CoreGraphics 回读胶囊为 `(1320, 30, 120, 50)`、主面板为 `(1010, 30, 430, 342)` 且主面板 `onscreen=1`。
 - 2026-08-12：桌面面板默认显示方式改为始终置顶浮窗；未保存过显示偏好的新安装会直接使用 `.floating`，菜单仍可手动切换为“置于普通窗口后方”。107 项 Swift 测试、构建安装、严格签名、进程和自动化诊断通过；本机偏好已写为 `backgroundPanelMode=0`，CoreGraphics 回读主面板与胶囊均为浮窗层级 3。
@@ -113,6 +128,7 @@
 
 ## 未解决
 
+- 当前机器是 macOS 26.6；升级到 macOS 27 后需回读 Dock/Finder 在背景与外观变化下对原生 `AppIcon.icon` 的动态高光、折射和半透明渲染。
 - 浮窗对话当前只展示最近一条执行状态/回复摘要，不承载完整多轮消息记录；完整上下文仍以 Codex 会话为准。
 - Codex 额度展示服务端窗口的剩余百分比，不是逐线程精确 Token 数；若账号只返回周窗口，5 小时额度不显示。
 - 公司额度目前依赖 Edge 保留平台标签页；可评估平台官方机器凭证或本地安全缓存。
@@ -127,7 +143,7 @@
 ```bash
 swift test --disable-sandbox --scratch-path /tmp/codex-hermes-touch-bar-tests
 ./script/build_and_run.sh --verify
-dist/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose-hermes
-dist/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose-automation
-dist/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose-effort low
+/Applications/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose-hermes
+/Applications/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose-automation
+/Applications/AI\ 工作岛.app/Contents/MacOS/CodexTouchBar --diagnose-effort low
 ```

@@ -7,6 +7,13 @@ struct CodexConversationResult: Sendable {
     let steeredActiveTurn: Bool
 }
 
+struct CodexPrompt: Sendable {
+    let text: String
+    let imageURLs: [URL]
+
+    var isEmpty: Bool { text.isEmpty && imageURLs.isEmpty }
+}
+
 enum CodexConversationRoute: Sendable {
     case desktopThread(threadID: String, cwd: URL, isActive: Bool)
     case appServerThread(threadID: String)
@@ -35,14 +42,15 @@ enum CodexConversationBridgeError: LocalizedError, Sendable {
 
 enum CodexConversationBridge {
     static func send(
-        prompt: String,
+        prompt: CodexPrompt,
         route: CodexConversationRoute
     ) async throws -> CodexConversationResult {
         if case let .desktopThread(threadID, cwd, isActive) = route {
             let disposition = try await CodexIPCClient().sendPrompt(
                 threadID: threadID,
                 cwd: cwd,
-                prompt: prompt,
+                prompt: prompt.text,
+                imagePaths: prompt.imageURLs.map(\.path),
                 isActive: isActive
             )
             return CodexConversationResult(
@@ -55,6 +63,44 @@ enum CodexConversationBridge {
             try CodexAppServerInvocation.run(prompt: prompt, route: route)
         }.value
     }
+
+    static func releaseWorkIslandOwnership(threadID: String) -> Bool {
+        BackgroundTurnRegistry.shared.release(threadID: threadID)
+    }
+}
+
+private final class BackgroundTurnRegistry: @unchecked Sendable {
+    static let shared = BackgroundTurnRegistry()
+
+    private struct Entry {
+        let process: Process
+        let writer: FileHandle
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+
+    func register(threadID: String, process: Process, writer: FileHandle) {
+        lock.lock()
+        entries[threadID] = Entry(process: process, writer: writer)
+        lock.unlock()
+    }
+
+    func finish(threadID: String) {
+        lock.lock()
+        entries.removeValue(forKey: threadID)
+        lock.unlock()
+    }
+
+    func release(threadID: String) -> Bool {
+        lock.lock()
+        let entry = entries.removeValue(forKey: threadID)
+        lock.unlock()
+        guard let entry else { return false }
+        try? entry.writer.close()
+        if entry.process.isRunning { entry.process.terminate() }
+        return true
+    }
 }
 
 private enum CodexAppServerInvocation {
@@ -63,7 +109,7 @@ private enum CodexAppServerInvocation {
     private static let turnID = 3
 
     static func run(
-        prompt: String,
+        prompt: CodexPrompt,
         route: CodexConversationRoute
     ) throws -> CodexConversationResult {
         guard let executableURL = locateCodexExecutable() else {
@@ -82,9 +128,12 @@ private enum CodexAppServerInvocation {
 
         let writer = inputPipe.fileHandleForWriting
         let reader = JSONLineReader(handle: outputPipe.fileHandleForReading)
+        var handedOffToBackground = false
         defer {
-            try? writer.close()
-            if process.isRunning { process.terminate() }
+            if !handedOffToBackground {
+                try? writer.close()
+                if process.isRunning { process.terminate() }
+            }
         }
 
         try write([
@@ -126,7 +175,9 @@ private enum CodexAppServerInvocation {
                 "id": threadID,
                 "params": [
                     "cwd": cwd.path,
-                    "serviceName": "codex-hermes-touch-bar",
+                    "serviceName": "codex-desktop",
+                    "threadSource": "vscode",
+                    "ephemeral": false,
                 ],
             ], to: writer)
             let response = try waitForResponse(id: threadID, reader: reader, process: process)
@@ -146,7 +197,7 @@ private enum CodexAppServerInvocation {
                 "params": [
                     "threadId": resolvedThreadID,
                     "expectedTurnId": activeTurnID,
-                    "input": [["type": "text", "text": prompt]],
+                    "input": userInput(for: prompt),
                 ],
             ], to: writer)
         } else {
@@ -155,13 +206,35 @@ private enum CodexAppServerInvocation {
                 "id": turnID,
                 "params": [
                     "threadId": resolvedThreadID,
-                    "input": [["type": "text", "text": prompt]],
+                    "input": userInput(for: prompt),
                 ],
             ], to: writer)
         }
 
         let turnResponse = try waitForResponse(id: turnID, reader: reader, process: process)
         let acceptedTurnID = responseTurnIdentifier(turnResponse) ?? activeTurnID
+        if case .new = route {
+            retainWorkIslandThread(resolvedThreadID)
+            BackgroundTurnRegistry.shared.register(
+                threadID: resolvedThreadID,
+                process: process,
+                writer: writer
+            )
+            handedOffToBackground = true
+            drainAcceptedTurnInBackground(
+                threadID: resolvedThreadID,
+                turnID: acceptedTurnID,
+                reader: reader,
+                writer: writer,
+                process: process,
+                imageURLs: prompt.imageURLs
+            )
+            return CodexConversationResult(
+                threadID: resolvedThreadID,
+                assistantText: "会话已创建，任务正在执行。",
+                steeredActiveTurn: false
+            )
+        }
         let assistantText = try readUntilTurnCompletes(
             threadID: resolvedThreadID,
             turnID: acceptedTurnID,
@@ -175,9 +248,56 @@ private enum CodexAppServerInvocation {
         )
     }
 
+    private static func drainAcceptedTurnInBackground(
+        threadID: String,
+        turnID: String?,
+        reader: JSONLineReader,
+        writer: FileHandle,
+        process: Process,
+        imageURLs: [URL]
+    ) {
+        DispatchQueue.global(qos: .utility).async {
+            defer { BackgroundTurnRegistry.shared.finish(threadID: threadID) }
+            _ = try? readUntilTurnCompletes(
+                threadID: threadID,
+                turnID: turnID,
+                reader: reader,
+                process: process
+            )
+            try? writer.close()
+            if process.isRunning { process.terminate() }
+            for url in imageURLs { try? FileManager.default.removeItem(at: url) }
+        }
+    }
+
+    private static func retainWorkIslandThread(_ threadID: String) {
+        let fileManager = FileManager.default
+        let directory = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Codex Hermes Touch Bar", isDirectory: true)
+        let file = directory.appendingPathComponent("work-island-thread-ids.json")
+        try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let existing = (try? Data(contentsOf: file))
+            .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
+        let retained = Array(([threadID] + existing.filter { $0 != threadID }).prefix(100))
+        guard let data = try? JSONEncoder().encode(retained) else { return }
+        try? data.write(to: file, options: .atomic)
+    }
+
+    private static func userInput(for prompt: CodexPrompt) -> [[String: Any]] {
+        var input: [[String: Any]] = []
+        if !prompt.text.isEmpty {
+            input.append(["type": "text", "text": prompt.text])
+        }
+        input.append(contentsOf: prompt.imageURLs.map {
+            ["type": "localImage", "path": $0.path]
+        })
+        return input
+    }
+
     private static func locateCodexExecutable() -> URL? {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let candidates = [
+            URL(fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"),
             home.appendingPathComponent(".local/bin/codex"),
             URL(fileURLWithPath: "/opt/homebrew/bin/codex"),
             URL(fileURLWithPath: "/usr/local/bin/codex"),
@@ -251,7 +371,7 @@ private enum CodexAppServerInvocation {
     }
 }
 
-private final class JSONLineReader {
+private final class JSONLineReader: @unchecked Sendable {
     private let handle: FileHandle
     private var buffer = Data()
 
@@ -270,7 +390,8 @@ private final class JSONLineReader {
                 }
                 return object
             }
-            guard let chunk = try handle.read(upToCount: 4096), !chunk.isEmpty else {
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else {
                 throw CodexConversationBridgeError.serverStopped
             }
             buffer.append(chunk)

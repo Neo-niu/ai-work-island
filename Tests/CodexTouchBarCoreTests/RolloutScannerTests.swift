@@ -393,6 +393,47 @@ import Testing
     #expect(snapshot.threads.first { $0.id == "unread-completed-thread" }?.isUnread == true)
 }
 
+@Test func openingACompletedThreadClearsWaitingUntilItHasANewerResult() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let threadID = "opened-thread"
+    let rolloutFile = root.appendingPathComponent("completed.jsonl")
+    try rollout(
+        id: threadID,
+        cwd: root.path,
+        events: ["task_started", "task_complete"],
+        at: rolloutFile
+    )
+    let globalStateFile = root.appendingPathComponent("global-state.json")
+    try "{\"electron-persisted-atom-state\":{\"unread-thread-ids-by-host-v1\":{\"local\":[\"\(threadID)\"]}}}"
+        .write(to: globalStateFile, atomically: true, encoding: .utf8)
+    let viewedThreadFile = root.appendingPathComponent("viewed.json")
+    try ViewedThreadStore.markViewed(
+        threadID: threadID,
+        at: Date().addingTimeInterval(1),
+        file: viewedThreadFile
+    )
+
+    let scanner = RolloutScanner(
+        sessionsRoot: root,
+        stateDatabase: nil,
+        globalStateFile: globalStateFile,
+        retainedThreadFile: nil,
+        viewedThreadFile: viewedThreadFile,
+        recentFileInterval: 60
+    )
+    #expect(await scanner.scan().isEmpty)
+
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date().addingTimeInterval(2)],
+        ofItemAtPath: rolloutFile.path
+    )
+    #expect(await scanner.scan().map(\.id) == [threadID])
+}
+
 @Test func reloadsUnreadIDsWhenGlobalStateContentsChangeWithoutMetadataChange() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -398,8 +398,9 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     var onItemSelected: ((WorkItem) -> Void)?
     var onItemDetailsSelected: ((WorkItem) -> Void)?
     var onItemOutputSelected: ((WorkItem) -> Void)?
-    var onCodexPromptSubmitted: ((String, String) -> Void)?
-    var onNewConversationSubmitted: ((String) -> Void)?
+    var onCodexTransferSelected: ((WorkItem) -> Void)?
+    var onCodexPromptSubmitted: ((String, CodexPrompt) -> Void)?
+    var onNewConversationSubmitted: ((CodexPrompt) -> Void)?
     var onNewConversationDirectorySelected: (() -> Void)?
     var onVisibilityChanged: ((Bool) -> Void)?
 
@@ -409,7 +410,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     private let titleLabel = NSTextField(labelWithString: "AI 工作岛")
     private let statusCapsule = StatusCapsuleView()
     private let newTaskInputBackground = RoundedGlassInputBackground()
-    private let newTaskPromptField = NSTextField(string: "")
+    private let newTaskPromptField = PastedImageTextField(string: "")
+    private let newTaskImageCountLabel = NSTextField(labelWithString: "")
     private let newTaskSendButton = NSButton()
     private let newTaskDirectoryButton = NSButton()
     private let codexQuotaView = DesktopQuotaSummaryView()
@@ -652,6 +654,9 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
                         self?.onItemOutputSelected?(item)
                     }
                     if item.id.hasPrefix("codex:") {
+                        row.onCodexTransferSelected = { [weak self] in
+                            self?.onCodexTransferSelected?(item)
+                        }
                         row.onPromptSubmitted = { [weak self] prompt in
                             self?.onCodexPromptSubmitted?(item.id, prompt)
                         }
@@ -960,6 +965,11 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         newTaskPromptField.target = self
         newTaskPromptField.action = #selector(submitNewConversation)
         newTaskPromptField.setAccessibilityLabel("新任务指令")
+        newTaskPromptField.onImagesChanged = { [weak self] count in
+            self?.updateImageCountLabel(self?.newTaskImageCountLabel, count: count)
+        }
+
+        configureImageCountLabel(newTaskImageCountLabel)
 
         newTaskSendButton.image = NSImage(
             systemSymbolName: "arrow.up.circle.fill",
@@ -988,7 +998,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         newTaskDirectoryButton.widthAnchor.constraint(equalToConstant: 22).isActive = true
 
         let newTaskControls = NSStackView(
-            views: [newTaskDirectoryButton, newTaskPromptField, newTaskSendButton]
+            views: [newTaskDirectoryButton, newTaskPromptField, newTaskImageCountLabel, newTaskSendButton]
         )
         newTaskControls.orientation = .horizontal
         newTaskControls.alignment = .centerY
@@ -1041,10 +1051,23 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     }
 
     @objc private func submitNewConversation() {
-        let prompt = newTaskPromptField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = newTaskPromptField.takePrompt()
         guard !prompt.isEmpty, newTaskPromptField.isEnabled else { return }
         newTaskPromptField.stringValue = ""
+        updateImageCountLabel(newTaskImageCountLabel, count: 0)
         onNewConversationSubmitted?(prompt)
+    }
+
+    private func configureImageCountLabel(_ label: NSTextField) {
+        label.font = .systemFont(ofSize: 10, weight: .medium)
+        label.textColor = .controlAccentColor
+        label.isHidden = true
+        label.setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    private func updateImageCountLabel(_ label: NSTextField?, count: Int) {
+        label?.stringValue = "图×\(count)"
+        label?.isHidden = count == 0
     }
 
     @objc private func selectNewConversationDirectory() {
@@ -1059,6 +1082,15 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     func controlTextDidEndEditing(_ obj: Notification) {
         guard obj.object as? NSTextField === newTaskPromptField else { return }
         newTaskInputBackground.setFocused(false)
+    }
+
+    func control(
+        _ control: NSControl,
+        textView: NSTextView,
+        doCommandBy commandSelector: Selector
+    ) -> Bool {
+        guard control === newTaskPromptField else { return false }
+        return newTaskPromptField.handleDeleteCommand(commandSelector)
     }
 
     @objc private func minimizeToFloatingButton() {
@@ -1122,7 +1154,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         ])
         floatingPanel.contentView = canvas
         floatingButtonView.onActivate = { [weak self] in
-            self?.activateFloatingButton(hoverExpanded: false)
+            self?.activateFloatingButton(hoverExpanded: true)
         }
         floatingButtonView.onHoverEntered = { [weak self] in
             self?.activateFloatingButton(hoverExpanded: true)
@@ -1772,15 +1804,19 @@ final class FloatingStatusButtonView: NSVisualEffectView {
 
     override func mouseUp(with event: NSEvent) {
         setScale(isHovering ? 1.025 : 1)
-        if !didDrag { onActivate?() }
+        if !didDrag { handleActivate() }
         mouseDownLocation = nil
         windowOriginAtMouseDown = nil
         didDrag = false
     }
 
     override func accessibilityPerformPress() -> Bool {
-        onActivate?()
+        handleActivate()
         return true
+    }
+
+    func handleActivate() {
+        onActivate?()
     }
 
     private func setHovering(_ hovering: Bool) {
@@ -1957,15 +1993,20 @@ private final class StatusCapsuleView: NSView {
 private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
     var onSelected: (() -> Void)?
     var onDetailsSelected: (() -> Void)?
-    var onPromptSubmitted: ((String) -> Void)?
+    var onPromptSubmitted: ((CodexPrompt) -> Void)?
+    var onCodexTransferSelected: (() -> Void)? {
+        didSet { codexTransferButton.isHidden = onCodexTransferSelected == nil }
+    }
     var onOutputSelected: (() -> Void)? {
         didSet { outputButton.isHidden = onOutputSelected == nil }
     }
 
     private let actions = NSStackView()
     private let outputButton = NSButton()
+    private let codexTransferButton = NSButton()
     private let conversationInputBackground = RoundedGlassInputBackground()
-    private let promptField = NSTextField(string: "")
+    private let promptField = PastedImageTextField(string: "")
+    private let imageCountLabel = NSTextField(labelWithString: "")
     private let sendButton = NSButton()
     private let conversationStatusLabel = NSTextField(labelWithString: "")
     private var tracking: NSTrackingArea?
@@ -2026,10 +2067,19 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
         outputButton.toolTip = "打开产出"
         outputButton.target = self
         outputButton.action = #selector(openOutput)
+        codexTransferButton.image = NSImage(
+            systemSymbolName: "arrow.up.forward.app",
+            accessibilityDescription: "转到 Codex"
+        )
+        codexTransferButton.isBordered = false
+        codexTransferButton.toolTip = "停止工作岛占用并转到 Codex"
+        codexTransferButton.target = self
+        codexTransferButton.action = #selector(transferToCodex)
+        codexTransferButton.isHidden = true
         let detailsButton = actionButton(symbol: "info.circle", toolTip: "查看详情")
         detailsButton.target = self
         detailsButton.action = #selector(showDetails)
-        actions.setViews([outputButton, detailsButton], in: .leading)
+        actions.setViews([codexTransferButton, outputButton, detailsButton], in: .leading)
         actions.orientation = .horizontal
         actions.spacing = 3
         actions.alphaValue = 0
@@ -2063,6 +2113,14 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
             promptField.target = self
             promptField.action = #selector(submitPrompt)
             promptField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            imageCountLabel.font = .systemFont(ofSize: 10, weight: .medium)
+            imageCountLabel.textColor = .controlAccentColor
+            imageCountLabel.isHidden = true
+            imageCountLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+            promptField.onImagesChanged = { [weak self] count in
+                self?.imageCountLabel.stringValue = "图×\(count)"
+                self?.imageCountLabel.isHidden = count == 0
+            }
 
             sendButton.image = NSImage(
                 systemSymbolName: "arrow.up.circle.fill",
@@ -2074,7 +2132,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
             sendButton.action = #selector(submitPrompt)
             sendButton.toolTip = "继续该项目"
 
-            let inputControls = NSStackView(views: [promptField, sendButton])
+            let inputControls = NSStackView(views: [promptField, imageCountLabel, sendButton])
             inputControls.orientation = .horizontal
             inputControls.alignment = .centerY
             inputControls.spacing = 5
@@ -2203,6 +2261,15 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
         conversationInputBackground.setFocused(false)
     }
 
+    func control(
+        _ control: NSControl,
+        textView: NSTextView,
+        doCommandBy commandSelector: Selector
+    ) -> Bool {
+        guard control === promptField else { return false }
+        return promptField.handleDeleteCommand(commandSelector)
+    }
+
     private func setHovering(_ hovering: Bool) {
         isHovering = hovering
         if hovering {
@@ -2232,12 +2299,76 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
     }
 
     @objc private func openOutput() { onOutputSelected?() }
+    @objc private func transferToCodex() { onCodexTransferSelected?() }
     @objc private func showDetails() { onDetailsSelected?() }
     @objc private func submitPrompt() {
-        let prompt = promptField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = promptField.takePrompt()
         guard !prompt.isEmpty, promptField.isEnabled else { return }
         promptField.stringValue = ""
+        imageCountLabel.isHidden = true
         onPromptSubmitted?(prompt)
+    }
+}
+
+@MainActor
+final class PastedImageTextField: NSTextField {
+    var onImagesChanged: ((Int) -> Void)?
+    private var imageURLs: [URL] = []
+    var pastedImageCount: Int { imageURLs.count }
+
+    func handleDeleteCommand(_ commandSelector: Selector) -> Bool {
+        guard stringValue.isEmpty,
+              commandSelector == #selector(NSResponder.deleteBackward(_:))
+                || commandSelector == #selector(NSResponder.deleteForward(_:)),
+              let url = imageURLs.popLast() else { return false }
+        try? FileManager.default.removeItem(at: url)
+        onImagesChanged?(imageURLs.count)
+        return true
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isPaste = modifiers == .command
+            && event.charactersIgnoringModifiers?.lowercased() == "v"
+        if isPaste, let image = NSImage(pasteboard: .general), let url = Self.writeTemporaryPNG(image) {
+            imageURLs.append(url)
+            onImagesChanged?(imageURLs.count)
+            return true
+        }
+        let isDelete = modifiers.isEmpty && (event.keyCode == 51 || event.characters == "\u{7f}")
+        if isDelete, stringValue.isEmpty, let url = imageURLs.popLast() {
+            try? FileManager.default.removeItem(at: url)
+            onImagesChanged?(imageURLs.count)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    func takePrompt() -> CodexPrompt {
+        let prompt = CodexPrompt(
+            text: stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+            imageURLs: imageURLs
+        )
+        imageURLs = []
+        onImagesChanged?(0)
+        return prompt
+    }
+
+    private static func writeTemporaryPNG(_ image: NSImage) -> URL? {
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let data = bitmap.representation(using: .png, properties: [:]) else { return nil }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AIWorkIsland-PastedImages", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            NSSound.beep()
+            return nil
+        }
     }
 }
 

@@ -443,6 +443,21 @@ import Testing
     #expect(DesktopFloatingHoverBehavior.shouldAutoCollapse(isHoverExpanded: true, isPanelHovered: false))
 }
 
+@MainActor
+@Test func clickingTheCapsuleUsesTheSameAutoCollapseLifecycleAsHovering() {
+    let view = FloatingStatusButtonView(frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.size))
+    var expansionAllowsAutoCollapse = false
+    view.onActivate = { expansionAllowsAutoCollapse = true }
+
+    view.handleActivate()
+
+    #expect(expansionAllowsAutoCollapse)
+    #expect(DesktopFloatingHoverBehavior.shouldAutoCollapse(
+        isHoverExpanded: expansionAllowsAutoCollapse,
+        isPanelHovered: false
+    ))
+}
+
 @Test func hoverExpansionFloatsAboveAFullScreenWindowWithoutChangingTheSavedMode() {
     #expect(!DesktopPanelWindowPolicy.floatsAboveFullScreen(
         mode: .background,

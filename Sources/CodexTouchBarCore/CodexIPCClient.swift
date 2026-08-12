@@ -79,6 +79,7 @@ public actor CodexIPCClient {
         threadID: String,
         cwd: URL,
         prompt: String,
+        imagePaths: [String] = [],
         isActive: Bool
     ) throws -> PromptDisposition {
         guard FileManager.default.fileExists(atPath: socketURL.path) else {
@@ -89,11 +90,17 @@ public actor CodexIPCClient {
         let clientID = try initializeClient(on: descriptor)
         let requestID = UUID().uuidString
         let messageID = UUID().uuidString
-        let input: [[String: Any]] = [[
-            "type": "text",
-            "text": prompt,
-            "text_elements": [],
-        ]]
+        var input: [[String: Any]] = []
+        if !prompt.isEmpty {
+            input.append([
+                "type": "text",
+                "text": prompt,
+                "text_elements": [],
+            ])
+        }
+        input.append(contentsOf: imagePaths.map {
+            ["type": "localImage", "path": $0]
+        })
 
         let method: String
         let params: [String: Any]
