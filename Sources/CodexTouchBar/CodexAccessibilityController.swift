@@ -194,7 +194,10 @@ final class CodexAccessibilityController {
         let root = AXUIElementCreateApplication(application.processIdentifier)
         _ = enableEnhancedAccessibility(for: root)
         let target = normalized(String(query.prefix(120)))
-        for _ in 0..<12 {
+        // A newly created persistent thread can take several seconds to enter
+        // Codex's visible sidebar. Wait for the real row instead of falling
+        // back to a deep link that is broadcast to hidden Codex windows.
+        for _ in 0..<80 {
             let match = accessibilityElements(in: root, sidebarOnly: true)
                 .compactMap { snapshot -> (AXUIElement, Int, Int)? in
                     guard snapshot.canPress,

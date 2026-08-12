@@ -407,6 +407,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     var onItemSelected: ((WorkItem) -> Void)?
     var onItemDetailsSelected: ((WorkItem) -> Void)?
     var onItemOutputSelected: ((WorkItem) -> Void)?
+    var onItemAcknowledged: ((WorkItem) -> Void)?
+    var onAllWaitingAcknowledged: (() -> Void)?
     var onCodexTransferSelected: ((WorkItem) -> Void)?
     var onCodexPromptSubmitted: ((String, CodexPrompt) -> Void)?
     var onNewConversationSubmitted: ((CodexPrompt) -> Void)?
@@ -643,8 +645,15 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
                     title: sectionLayout.section.title,
                     count: sectionLayout.totalCount,
                     expanded: sectionLayout.isExpanded,
-                    collapsible: !sectionLayout.section.isAlwaysExpanded
+                    collapsible: !sectionLayout.section.isAlwaysExpanded,
+                    actionTitle: sectionLayout.section == .needsUser
+                        && sectionLayout.items.contains(where: { $0.status == .waiting })
+                        ? "全部已阅"
+                        : nil
                 )
+                header.onAction = sectionLayout.section == .needsUser
+                    ? { [weak self] in self?.onAllWaitingAcknowledged?() }
+                    : nil
                 if !sectionLayout.section.isAlwaysExpanded {
                     header.onToggle = { [weak self] in
                         self?.toggle(section: sectionLayout.section)
@@ -661,6 +670,11 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
                     row.onDetailsSelected = { [weak self] in self?.onItemDetailsSelected?(item) }
                     row.onOutputSelected = item.outputPath == nil ? nil : { [weak self] in
                         self?.onItemOutputSelected?(item)
+                    }
+                    if item.id.hasPrefix("codex:"), item.status == .waiting {
+                        row.onAcknowledgeSelected = { [weak self] in
+                            self?.onItemAcknowledged?(item)
+                        }
                     }
                     if item.id.hasPrefix("codex:") {
                         row.onCodexTransferSelected = { [weak self] in
@@ -1860,8 +1874,15 @@ final class FloatingStatusButtonView: NSVisualEffectView {
 @MainActor
 private final class WorkSectionHeaderView: NSView {
     var onToggle: (() -> Void)?
+    var onAction: (() -> Void)?
 
-    init(title: String, count: Int, expanded: Bool, collapsible: Bool = true) {
+    init(
+        title: String,
+        count: Int,
+        expanded: Bool,
+        collapsible: Bool = true,
+        actionTitle: String? = nil
+    ) {
         super.init(frame: .zero)
         let button = NSButton(
             title: collapsible ? "\(expanded ? "▾" : "▸")  \(title)" : title,
@@ -1876,7 +1897,16 @@ private final class WorkSectionHeaderView: NSView {
         let countLabel = NSTextField(labelWithString: "\(count)")
         countLabel.font = .monospacedDigitSystemFont(ofSize: 9, weight: .medium)
         countLabel.textColor = .tertiaryLabelColor
-        let row = NSStackView(views: [button, NSView(), countLabel])
+        var views: [NSView] = [button, NSView(), countLabel]
+        if let actionTitle {
+            let actionButton = NSButton(title: actionTitle, target: self, action: #selector(runAction))
+            actionButton.isBordered = false
+            actionButton.font = .systemFont(ofSize: 9, weight: .medium)
+            actionButton.contentTintColor = .controlAccentColor
+            actionButton.toolTip = "将所有已完成的 Codex 结果标记为已阅"
+            views.append(actionButton)
+        }
+        let row = NSStackView(views: views)
         row.orientation = .horizontal
         row.alignment = .centerY
         row.translatesAutoresizingMaskIntoConstraints = false
@@ -1892,6 +1922,7 @@ private final class WorkSectionHeaderView: NSView {
     required init?(coder: NSCoder) { nil }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     @objc private func toggle() { onToggle?() }
+    @objc private func runAction() { onAction?() }
 }
 
 @MainActor
@@ -2009,6 +2040,9 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
     var onCodexTransferSelected: (() -> Void)? {
         didSet { codexTransferButton.isHidden = onCodexTransferSelected == nil }
     }
+    var onAcknowledgeSelected: (() -> Void)? {
+        didSet { acknowledgeButton.isHidden = onAcknowledgeSelected == nil }
+    }
     var onOutputSelected: (() -> Void)? {
         didSet { outputButton.isHidden = onOutputSelected == nil }
     }
@@ -2016,6 +2050,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
     private let actions = NSStackView()
     private let outputButton = NSButton()
     private let codexTransferButton = NSButton()
+    private let acknowledgeButton = NSButton()
     private let conversationInputBackground = RoundedGlassInputBackground()
     private let promptField = PastedImageTextField(string: "")
     private let imageCountLabel = NSTextField(labelWithString: "")
@@ -2084,14 +2119,28 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
             accessibilityDescription: "转到 Codex"
         )
         codexTransferButton.isBordered = false
-        codexTransferButton.toolTip = "停止工作岛占用并转到 Codex"
+        codexTransferButton.toolTip = item.status == .waiting
+            ? "查看结果并继续处理"
+            : "停止工作岛占用并转到 Codex"
         codexTransferButton.target = self
         codexTransferButton.action = #selector(transferToCodex)
         codexTransferButton.isHidden = true
+        acknowledgeButton.image = NSImage(
+            systemSymbolName: "checkmark.circle",
+            accessibilityDescription: "标记已阅"
+        )
+        acknowledgeButton.isBordered = false
+        acknowledgeButton.toolTip = "标记已阅"
+        acknowledgeButton.target = self
+        acknowledgeButton.action = #selector(acknowledge)
+        acknowledgeButton.isHidden = true
         let detailsButton = actionButton(symbol: "info.circle", toolTip: "查看详情")
         detailsButton.target = self
         detailsButton.action = #selector(showDetails)
-        actions.setViews([codexTransferButton, outputButton, detailsButton], in: .leading)
+        actions.setViews(
+            [codexTransferButton, acknowledgeButton, outputButton, detailsButton],
+            in: .leading
+        )
         actions.orientation = .horizontal
         actions.spacing = 3
         actions.alphaValue = 0
@@ -2105,25 +2154,18 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
         mainRow.translatesAutoresizingMaskIntoConstraints = false
 
         if item.id.hasPrefix("codex:") {
-            let conversationStatusText: String
+            let summary: CodexCardStatusSummary
             if item.status == .running {
-                var primaryParts: [String] = []
-                if let count = item.phaseCount, count > 0 {
-                    let current = min(max(item.phaseIndex ?? 0, 0), count)
-                    primaryParts.append("进度 \(current)/\(count)")
-                }
-                if let phase = item.phase {
-                    primaryParts.append("正在：\(phase)")
-                }
-                let primary = primaryParts.isEmpty
-                    ? "正在等待新的运行动态"
-                    : primaryParts.joined(separator: " · ")
-                conversationStatusText = item.recentActivity.map {
-                    "\(primary)\n刚刚：\($0)"
-                } ?? primary
+                summary = .running(
+                    phase: item.phase,
+                    completedSteps: item.phaseIndex,
+                    totalSteps: item.phaseCount,
+                    recentActivity: item.recentActivity
+                )
             } else {
-                conversationStatusText = "上轮：\(lastAssistantResult ?? "暂无可显示结果")"
+                summary = .waiting(lastAssistantResult: lastAssistantResult)
             }
+            let conversationStatusText = summary.text
             conversationStatusLabel.stringValue = conversationStatusText
             conversationStatusLabel.font = .systemFont(ofSize: 10)
             conversationStatusLabel.textColor = .tertiaryLabelColor
@@ -2343,6 +2385,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
 
     @objc private func openOutput() { onOutputSelected?() }
     @objc private func transferToCodex() { onCodexTransferSelected?() }
+    @objc private func acknowledge() { onAcknowledgeSelected?() }
     @objc private func showDetails() { onDetailsSelected?() }
     @objc private func submitPrompt() {
         let prompt = promptField.takePrompt()

@@ -26,6 +26,37 @@ import Testing
     #expect(item?.phaseCount == nil)
 }
 
+@Test func codexCardStatusRemovesRepeatedActivityPrefixes() {
+    let summary = CodexCardStatusSummary.running(
+        phase: "正在：核对任务状态",
+        completedSteps: 2,
+        totalSteps: 4,
+        recentActivity: "刚刚：读取任务索引"
+    )
+
+    #expect(summary.primary == "进度 2/4 · 当前：核对任务状态")
+    #expect(summary.secondary == "最新：读取任务索引")
+    #expect(!summary.text.contains("正在：正在"))
+}
+
+@Test func codexCardStatusDropsDuplicateRecentActivity() {
+    let summary = CodexCardStatusSummary.running(
+        phase: "运行测试",
+        completedSteps: nil,
+        totalSteps: nil,
+        recentActivity: "正在运行测试"
+    )
+
+    #expect(summary.text == "当前：运行测试")
+}
+
+@Test func waitingCodexCardStatesTheRequiredUserAction() {
+    let summary = CodexCardStatusSummary.waiting(lastAssistantResult: "本地验证通过")
+
+    #expect(summary.primary == "需要你：查看结果并决定下一步")
+    #expect(summary.secondary == "结果：本地验证通过")
+}
+
 @Test func onlyFailedAndStaleWorkItemsRequireAttention() {
     #expect(WorkItemStatus.failed.requiresAttention)
     #expect(WorkItemStatus.stale.requiresAttention)

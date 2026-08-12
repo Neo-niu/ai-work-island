@@ -151,6 +151,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         desktopPanelController.onItemOutputSelected = { [weak self] item in
             self?.openWorkItemOutput(item)
         }
+        desktopPanelController.onItemAcknowledged = { [weak self] item in
+            guard let self,
+                  item.id.hasPrefix("codex:") else { return }
+            self.markThreadsViewed([String(item.id.dropFirst("codex:".count))])
+            self.showTransientStatus("已标记为已阅")
+        }
+        desktopPanelController.onAllWaitingAcknowledged = { [weak self] in
+            guard let self else { return }
+            let threadIDs = (self.latestGroups ?? []).flatMap(\.threads)
+                .filter(\.isUnread)
+                .map(\.id)
+            self.markThreadsViewed(threadIDs)
+            self.showTransientStatus(threadIDs.isEmpty ? "当前没有待读会话" : "已清空待读会话")
+        }
         desktopPanelController.onCodexTransferSelected = { [weak self] item in
             self?.transferWorkItemToCodex(item)
         }
@@ -464,27 +478,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     try await CodexAccessibilityController().openVisibleThread(title: title)
                     self.finishOpeningThread(thread.id, successMessage: successMessage)
                 } catch {
-                    self.openThreadUsingDeepLink(thread, successMessage: successMessage)
+                    self.showTransientStatus(
+                        "会话已保留，Codex 仍在同步；请稍后从工作岛重试",
+                        duration: 8
+                    )
                 }
             }
             return
         }
-        openThreadUsingDeepLink(thread, successMessage: successMessage)
-    }
-
-    private func openThreadUsingDeepLink(
-        _ thread: ActiveThread,
-        successMessage: String
-    ) {
-        guard let url = URL(string: "codex://threads/\(thread.id)") else {
-            showTransientStatus("无法生成目标会话链接")
-            return
-        }
-        guard NSWorkspace.shared.open(url) else {
-            showTransientStatus("Codex 未接受会话跳转")
-            return
-        }
-        finishOpeningThread(thread.id, successMessage: successMessage)
+        showTransientStatus("请先打开 Codex，再从工作岛进入该会话", duration: 8)
     }
 
     private func finishOpeningThread(_ threadID: String, successMessage: String) {
@@ -499,6 +501,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 "Library/Application Support/Codex Hermes Touch Bar/viewed-thread-ids.json"
             )
         try? ViewedThreadStore.markViewed(threadID: threadID, file: file)
+    }
+
+    private func markThreadsViewed(_ threadIDs: [String]) {
+        let file = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Application Support/Codex Hermes Touch Bar/viewed-thread-ids.json"
+            )
+        try? ViewedThreadStore.markViewed(threadIDs: threadIDs, file: file)
+        requestRefresh()
     }
 
     private func openWorkItem(_ item: WorkItem) {

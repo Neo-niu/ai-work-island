@@ -36,4 +36,31 @@ public enum ViewedThreadStore {
         let data = try JSONEncoder().encode(values)
         try data.write(to: file, options: .atomic)
     }
+
+    public static func markViewed(
+        threadIDs: [String],
+        at date: Date = Date(),
+        file: URL,
+        fileManager: FileManager = .default
+    ) throws {
+        guard !threadIDs.isEmpty else { return }
+        var values = viewedAtByThreadID(file: file, fileManager: fileManager)
+        for threadID in threadIDs {
+            values[threadID] = date
+        }
+        if values.count > 100 {
+            values = Dictionary(
+                uniqueKeysWithValues: values
+                    .sorted { $0.value > $1.value }
+                    .prefix(100)
+                    .map { ($0.key, $0.value) }
+            )
+        }
+        try fileManager.createDirectory(
+            at: file.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let data = try JSONEncoder().encode(values)
+        try data.write(to: file, options: .atomic)
+    }
 }
