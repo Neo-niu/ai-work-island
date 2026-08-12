@@ -322,6 +322,7 @@ struct DesktopPanelItemPresentation: Equatable {
     let phase: String?
     let phaseIndex: Int?
     let phaseCount: Int?
+    let recentActivity: String?
     let lastAssistantResult: String?
 
     init(_ item: WorkItem, lastAssistantResult: String? = nil) {
@@ -334,6 +335,7 @@ struct DesktopPanelItemPresentation: Equatable {
         phase = item.phase
         phaseIndex = item.phaseIndex
         phaseCount = item.phaseCount
+        recentActivity = item.recentActivity
         self.lastAssistantResult = lastAssistantResult
     }
 }
@@ -2041,7 +2043,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
         title.maximumNumberOfLines = 1
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let detailText = item.phase.map { "\($0) · \(item.displayDetail)" } ?? item.displayDetail
+        let detailText = item.phase.map { "正在：\($0) · \(item.displayDetail)" } ?? item.displayDetail
         let detail = NSTextField(labelWithString: detailText)
         detail.font = .systemFont(ofSize: 11)
         detail.textColor = .secondaryLabelColor
@@ -2093,12 +2095,26 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
         mainRow.translatesAutoresizingMaskIntoConstraints = false
 
         if item.id.hasPrefix("codex:") {
-            conversationStatusLabel.stringValue = "上轮：\(lastAssistantResult ?? "暂无可显示结果")"
+            let conversationStatusText: String
+            if item.status == .running {
+                var parts: [String] = []
+                if let count = item.phaseCount, count > 0 {
+                    let current = min(max(item.phaseIndex ?? 0, 0), count)
+                    parts.append("进度 \(current)/\(count)")
+                }
+                if let recentActivity = item.recentActivity {
+                    parts.append("刚刚：\(recentActivity)")
+                }
+                conversationStatusText = parts.isEmpty ? "正在等待新的运行动态" : parts.joined(separator: " · ")
+            } else {
+                conversationStatusText = "上轮：\(lastAssistantResult ?? "暂无可显示结果")"
+            }
+            conversationStatusLabel.stringValue = conversationStatusText
             conversationStatusLabel.font = .systemFont(ofSize: 10)
             conversationStatusLabel.textColor = .tertiaryLabelColor
             conversationStatusLabel.lineBreakMode = .byTruncatingTail
             conversationStatusLabel.maximumNumberOfLines = 1
-            conversationStatusLabel.toolTip = lastAssistantResult
+            conversationStatusLabel.toolTip = conversationStatusText
             conversationStatusLabel.setContentCompressionResistancePriority(
                 .defaultLow,
                 for: .horizontal
@@ -2153,7 +2169,18 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
             ])
             sendButton.widthAnchor.constraint(equalToConstant: 22).isActive = true
 
-            let stack = NSStackView(views: [mainRow, conversationStatusLabel, conversationInputBackground])
+            var conversationViews: [NSView] = [mainRow, conversationStatusLabel]
+            if let count = item.phaseCount, count > 0 {
+                let progress = StageProgressView(
+                    count: count,
+                    current: min(max(item.phaseIndex ?? 0, 0), count),
+                    color: item.status.color
+                )
+                progress.heightAnchor.constraint(equalToConstant: 3).isActive = true
+                conversationViews.append(progress)
+            }
+            conversationViews.append(conversationInputBackground)
+            let stack = NSStackView(views: conversationViews)
             stack.orientation = .vertical
             stack.alignment = .width
             stack.spacing = 4
@@ -2161,7 +2188,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
             stack.translatesAutoresizingMaskIntoConstraints = false
             addSubview(stack)
             NSLayoutConstraint.activate([
-                heightAnchor.constraint(equalToConstant: 96),
+                heightAnchor.constraint(equalToConstant: 102),
                 stack.leadingAnchor.constraint(
                     equalTo: leadingAnchor,
                     constant: DesktopPanelLayout.workItemHorizontalInset
@@ -2186,7 +2213,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
             ])
         }
 
-        if let count = item.phaseCount, count > 0 {
+        if !item.id.hasPrefix("codex:"), let count = item.phaseCount, count > 0 {
             let progress = StageProgressView(
                 count: count,
                 current: min(max(item.phaseIndex ?? 0, 0), count),

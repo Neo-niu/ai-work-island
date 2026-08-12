@@ -2,6 +2,30 @@
 import Foundation
 import Testing
 
+@Test func codexLiveProgressBecomesCurrentPhaseWithoutInventingAPercentage() {
+    let thread = ActiveThread(
+        id: "thread-1",
+        cwd: URL(fileURLWithPath: "/tmp/project"),
+        startedAt: Date(timeIntervalSince1970: 100),
+        updatedAt: Date(timeIntervalSince1970: 200),
+        liveProgress: CodexLiveProgress(
+            activities: ["正在读取文件", "正在运行测试"]
+        )
+    )
+    let group = ProjectGroup(
+        id: "project",
+        name: "项目",
+        threads: [thread],
+        isUnnamed: false
+    )
+
+    let item = WorkStatusHub.codexItems(from: [group]).first
+    #expect(item?.phase == "正在运行测试")
+    #expect(item?.recentActivity == "正在读取文件")
+    #expect(item?.phaseIndex == nil)
+    #expect(item?.phaseCount == nil)
+}
+
 @Test func onlyFailedAndStaleWorkItemsRequireAttention() {
     #expect(WorkItemStatus.failed.requiresAttention)
     #expect(WorkItemStatus.stale.requiresAttention)

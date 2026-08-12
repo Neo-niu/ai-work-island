@@ -10,6 +10,9 @@ struct RolloutTailUpdate: Equatable, Sendable {
     let latestShortTermLimit: WeeklyLimitUsage?
     let latestWeeklyLimit: WeeklyLimitUsage?
     let latestAssistantResult: String?
+    let liveActivities: [String]
+    let latestPlanProgress: CodexLiveProgress?
+    let resetsLiveProgress: Bool
     let processedOffset: UInt64
     let bytesRead: Int
 }
@@ -27,6 +30,9 @@ enum RolloutTailReader {
                 latestShortTermLimit: nil,
                 latestWeeklyLimit: nil,
                 latestAssistantResult: nil,
+                liveActivities: [],
+                latestPlanProgress: nil,
+                resetsLiveProgress: false,
                 processedOffset: offset,
                 bytesRead: data.count
             )
@@ -37,12 +43,26 @@ enum RolloutTailReader {
         var latestShortTermLimit: WeeklyLimitUsage?
         var latestWeeklyLimit: WeeklyLimitUsage?
         var latestAssistantResult: String?
+        var liveActivities: [String] = []
+        var latestPlanProgress: CodexLiveProgress?
+        var resetsLiveProgress = false
         for line in completedData.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true) {
-            let events = lineEvents(in: Data(line))
+            let lineData = Data(line)
+            let events = lineEvents(in: lineData)
+            if events.task?.type == "task_started" {
+                liveActivities.removeAll(keepingCapacity: true)
+                latestPlanProgress = nil
+                resetsLiveProgress = true
+            }
             latestEvent = events.task ?? latestEvent
             latestShortTermLimit = events.shortTermLimit ?? latestShortTermLimit
             latestWeeklyLimit = events.weeklyLimit ?? latestWeeklyLimit
-            latestAssistantResult = assistantResult(in: Data(line)) ?? latestAssistantResult
+            latestAssistantResult = assistantResult(in: lineData) ?? latestAssistantResult
+            if let activity = activityMessage(in: lineData), liveActivities.last != activity {
+                liveActivities.append(activity)
+                liveActivities = Array(liveActivities.suffix(3))
+            }
+            latestPlanProgress = planProgress(in: lineData) ?? latestPlanProgress
         }
 
         return RolloutTailUpdate(
@@ -50,6 +70,9 @@ enum RolloutTailReader {
             latestShortTermLimit: latestShortTermLimit,
             latestWeeklyLimit: latestWeeklyLimit,
             latestAssistantResult: latestAssistantResult,
+            liveActivities: liveActivities,
+            latestPlanProgress: latestPlanProgress,
+            resetsLiveProgress: resetsLiveProgress,
             processedOffset: offset + UInt64(completedData.count),
             bytesRead: data.count
         )
@@ -110,6 +133,109 @@ enum RolloutTailReader {
             rawText = nil
         }
         guard let rawText else { return nil }
+        return compactDisplayText(rawText)
+    }
+
+    static func activityMessage(in lineData: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: lineData),
+              let envelope = object as? [String: Any],
+              let payload = envelope["payload"] as? [String: Any] else {
+            return nil
+        }
+
+        let rawText: String?
+        if envelope["type"] as? String == "event_msg",
+           payload["type"] as? String == "agent_message",
+           payload["phase"] as? String == "commentary" {
+            rawText = payload["message"] as? String
+        } else if envelope["type"] as? String == "response_item",
+                  payload["type"] as? String == "message",
+                  payload["role"] as? String == "assistant",
+                  payload["phase"] as? String == "commentary",
+                  let content = payload["content"] as? [[String: Any]] {
+            rawText = content.compactMap { item in
+                guard item["type"] as? String == "output_text" else { return nil }
+                return item["text"] as? String
+            }.joined(separator: "\n")
+        } else if envelope["type"] as? String == "response_item",
+                  payload["type"] as? String == "custom_tool_call",
+                  let name = payload["name"] as? String {
+            rawText = toolActivity(name: name)
+        } else {
+            rawText = nil
+        }
+        guard let rawText else { return nil }
+        return compactDisplayText(rawText)
+    }
+
+    static func planProgress(in lineData: Data) -> CodexLiveProgress? {
+        guard let object = try? JSONSerialization.jsonObject(with: lineData),
+              let envelope = object as? [String: Any],
+              envelope["type"] as? String == "response_item",
+              let payload = envelope["payload"] as? [String: Any] else {
+            return nil
+        }
+
+        let plan: [[String: Any]]
+        if payload["type"] as? String == "function_call",
+           payload["name"] as? String == "update_plan",
+           let arguments = payload["arguments"] as? String,
+           let argumentsData = arguments.data(using: .utf8),
+           let root = try? JSONSerialization.jsonObject(with: argumentsData) as? [String: Any],
+           let parsedPlan = root["plan"] as? [[String: Any]] {
+            plan = parsedPlan
+        } else if payload["type"] as? String == "custom_tool_call",
+                  payload["name"] as? String == "exec",
+                  let input = payload["input"] as? String {
+            plan = planSteps(inExecInput: input)
+        } else {
+            return nil
+        }
+        guard !plan.isEmpty else { return nil }
+        let completed = plan.filter { $0["status"] as? String == "completed" }.count
+        let currentStep = plan.first { $0["status"] as? String == "in_progress" }?["step"] as? String
+        let activities = currentStep.flatMap(compactDisplayText).map { [$0] } ?? []
+        return CodexLiveProgress(
+            activities: activities,
+            completedStepCount: completed,
+            totalStepCount: plan.count
+        )
+    }
+
+    private static func planSteps(inExecInput input: String) -> [[String: Any]] {
+        guard input.contains("tools.update_plan(") else { return [] }
+        let pattern = #"step\s*:\s*\"((?:\\.|[^\"\\])*)\"\s*,\s*status\s*:\s*\"(completed|in_progress|pending)\""#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(input.startIndex..<input.endIndex, in: input)
+        return regex.matches(in: input, range: range).compactMap { match in
+            guard let stepRange = Range(match.range(at: 1), in: input),
+                  let statusRange = Range(match.range(at: 2), in: input) else {
+                return nil
+            }
+            let escapedStep = String(input[stepRange])
+            let step: String
+            if let data = "\"\(escapedStep)\"".data(using: .utf8),
+               let decoded = try? JSONDecoder().decode(String.self, from: data) {
+                step = decoded
+            } else {
+                step = escapedStep
+            }
+            return ["step": step, "status": String(input[statusRange])]
+        }
+    }
+
+    private static func toolActivity(name: String) -> String? {
+        switch name {
+        case "exec_command": "正在运行命令"
+        case "apply_patch": "正在修改文件"
+        case "web__run", "web_search": "正在查询资料"
+        case "view_image": "正在检查图片"
+        case "write_stdin": "正在等待命令结果"
+        default: nil
+        }
+    }
+
+    private static func compactDisplayText(_ rawText: String) -> String? {
         var displayText = rawText
         if let citationStart = displayText.range(of: "<oai-mem-citation>") {
             displayText.removeSubrange(citationStart.lowerBound...)

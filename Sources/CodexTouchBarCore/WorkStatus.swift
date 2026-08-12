@@ -42,6 +42,7 @@ public struct WorkItem: Codable, Equatable, Identifiable, Sendable {
     public let phase: String?
     public let phaseIndex: Int?
     public let phaseCount: Int?
+    public let recentActivity: String?
 
     public init(
         id: String,
@@ -55,7 +56,8 @@ public struct WorkItem: Codable, Equatable, Identifiable, Sendable {
         openURL: String? = nil,
         phase: String? = nil,
         phaseIndex: Int? = nil,
-        phaseCount: Int? = nil
+        phaseCount: Int? = nil,
+        recentActivity: String? = nil
     ) {
         self.id = id
         self.source = source
@@ -69,6 +71,7 @@ public struct WorkItem: Codable, Equatable, Identifiable, Sendable {
         self.phase = phase
         self.phaseIndex = phaseIndex
         self.phaseCount = phaseCount
+        self.recentActivity = recentActivity
     }
 }
 
@@ -151,7 +154,11 @@ public enum WorkStatusHub {
                     detail: thread.isActive ? "正在处理 · \(group.name)" : "等待查看 · \(group.name)",
                     status: thread.isActive ? .running : .waiting,
                     startedAt: thread.startedAt,
-                    updatedAt: thread.updatedAt
+                    updatedAt: thread.updatedAt,
+                    phase: thread.isActive ? thread.liveProgress?.currentActivity : nil,
+                    phaseIndex: thread.isActive ? thread.liveProgress?.completedStepCount : nil,
+                    phaseCount: thread.isActive ? thread.liveProgress?.totalStepCount : nil,
+                    recentActivity: thread.isActive ? thread.liveProgress?.recentActivity : nil
                 )
             }
         }

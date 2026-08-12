@@ -47,6 +47,29 @@ public struct RolloutSnapshot: Equatable, Sendable {
     }
 }
 
+public struct CodexLiveProgress: Equatable, Sendable {
+    public let activities: [String]
+    public let completedStepCount: Int?
+    public let totalStepCount: Int?
+
+    public init(
+        activities: [String] = [],
+        completedStepCount: Int? = nil,
+        totalStepCount: Int? = nil
+    ) {
+        self.activities = activities
+        self.completedStepCount = completedStepCount
+        self.totalStepCount = totalStepCount
+    }
+
+    public var currentActivity: String? { activities.last }
+
+    public var recentActivity: String? {
+        guard activities.count > 1 else { return nil }
+        return activities.dropLast().suffix(2).joined(separator: " · ")
+    }
+}
+
 public struct ActiveThread: Equatable, Sendable {
     public let id: String
     public let title: String?
@@ -57,6 +80,7 @@ public struct ActiveThread: Equatable, Sendable {
     public let isActive: Bool
     public let isUnread: Bool
     public let lastAssistantResult: String?
+    public let liveProgress: CodexLiveProgress?
 
     public init(
         id: String,
@@ -67,7 +91,8 @@ public struct ActiveThread: Equatable, Sendable {
         projectRecencyAt: Date? = nil,
         isActive: Bool = true,
         isUnread: Bool = false,
-        lastAssistantResult: String? = nil
+        lastAssistantResult: String? = nil,
+        liveProgress: CodexLiveProgress? = nil
     ) {
         self.id = id
         self.title = title
@@ -78,6 +103,7 @@ public struct ActiveThread: Equatable, Sendable {
         self.isActive = isActive
         self.isUnread = isUnread
         self.lastAssistantResult = lastAssistantResult
+        self.liveProgress = liveProgress
     }
 }
 

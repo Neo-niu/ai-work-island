@@ -605,6 +605,56 @@ private func rollout(
     )
 }
 
+@Test func tailReaderExtractsCommentaryAsLiveActivity() {
+    let eventMessage = Data(#"""
+    {"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":" 正在检查任务状态。\n 稍后继续。 "}}
+    """#.utf8)
+    let responseItem = Data("""
+    {"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"正在运行回归测试"}]}}
+    """.utf8)
+
+    #expect(RolloutTailReader.activityMessage(in: eventMessage) == "正在检查任务状态。 稍后继续。")
+    #expect(RolloutTailReader.activityMessage(in: responseItem) == "正在运行回归测试")
+    #expect(RolloutTailReader.assistantResult(in: eventMessage) == nil)
+}
+
+@Test func tailReaderUsesExplicitPlanForRealStepProgress() {
+    let line = Data(#"""
+    {"type":"response_item","payload":{"type":"function_call","name":"update_plan","arguments":"{\"plan\":[{\"step\":\"检查输入\",\"status\":\"completed\"},{\"step\":\"实现界面\",\"status\":\"in_progress\"},{\"step\":\"完成回归\",\"status\":\"pending\"}]}"}}
+    """#.utf8)
+
+    let progress = RolloutTailReader.planProgress(in: line)
+    #expect(progress?.completedStepCount == 1)
+    #expect(progress?.totalStepCount == 3)
+    #expect(progress?.currentActivity == "实现界面")
+}
+
+@Test func tailReaderReadsPlanFromCurrentCustomToolEnvelope() {
+    let line = Data(#"""
+    {"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const r = await tools.update_plan({plan:[{step:\"读取项目\",status:\"completed\"},{step:\"验证界面\",status:\"in_progress\"}]}); text(r);"}}
+    """#.utf8)
+
+    let progress = RolloutTailReader.planProgress(in: line)
+    #expect(progress?.completedStepCount == 1)
+    #expect(progress?.totalStepCount == 2)
+    #expect(progress?.currentActivity == "验证界面")
+}
+
+@Test func tailReaderResetsLiveProgressAtANewTaskStart() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: url) }
+    try """
+    {"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"旧任务动态"}}
+    {"type":"event_msg","payload":{"type":"task_started"}}
+    {"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"新任务动态"}}
+
+    """.write(to: url, atomically: true, encoding: .utf8)
+
+    let update = try RolloutTailReader.readChanges(at: url, from: 0)
+    #expect(update.resetsLiveProgress)
+    #expect(update.liveActivities == ["新任务动态"])
+}
+
 @Test func tailReaderRetriesAnIncompleteFinalLine() throws {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString)

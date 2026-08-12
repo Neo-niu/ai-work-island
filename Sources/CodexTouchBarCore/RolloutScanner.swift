@@ -22,6 +22,7 @@ public actor RolloutScanner {
         let shortTermLimit: WeeklyLimitUsage?
         let weeklyLimit: WeeklyLimitUsage?
         let assistantResult: String?
+        let liveProgress: CodexLiveProgress?
     }
 
     private struct GlobalStateValues {
@@ -167,6 +168,10 @@ public actor RolloutScanner {
                     .filter { $0.thread.id == root.id && $0.thread.lastAssistantResult != nil }
                     .max { $0.thread.updatedAt < $1.thread.updatedAt }?
                     .thread.lastAssistantResult
+                let liveProgress = activeRecords
+                    .filter { $0.thread.liveProgress != nil }
+                    .max { $0.thread.updatedAt < $1.thread.updatedAt }?
+                    .thread.liveProgress
 
                 guard activeStartedAt != nil || isUnread else {
                     return nil
@@ -180,7 +185,8 @@ public actor RolloutScanner {
                     projectRecencyAt: root.projectRecencyAt,
                     isActive: activeStartedAt != nil,
                     isUnread: isUnread,
-                    lastAssistantResult: lastAssistantResult
+                    lastAssistantResult: lastAssistantResult,
+                    liveProgress: liveProgress
                 )
             }
         } else {
@@ -216,7 +222,8 @@ public actor RolloutScanner {
                     projectRecencyAt: record.thread.projectRecencyAt,
                     isActive: isActive,
                     isUnread: isUnread,
-                    lastAssistantResult: record.thread.lastAssistantResult
+                    lastAssistantResult: record.thread.lastAssistantResult,
+                    liveProgress: record.thread.liveProgress
                 )
                 let existing = visibleThreadsByID[record.thread.id]
                 if existing == nil || visibleThread.updatedAt > existing!.updatedAt {
@@ -409,6 +416,30 @@ public actor RolloutScanner {
             startedAt = record.thread.startedAt
         }
 
+        let previousProgress = update.resetsLiveProgress ? nil : record.thread.liveProgress
+        let mergedActivities = Array(
+            ((previousProgress?.activities ?? []) + update.liveActivities)
+                .reduce(into: [String]()) { result, activity in
+                    if result.last != activity { result.append(activity) }
+                }
+                .suffix(3)
+        )
+        let planProgress = update.latestPlanProgress
+        let liveProgress: CodexLiveProgress?
+        if mergedActivities.isEmpty, planProgress == nil {
+            liveProgress = previousProgress
+        } else {
+            liveProgress = CodexLiveProgress(
+                activities: mergedActivities.isEmpty
+                    ? planProgress?.activities ?? []
+                    : mergedActivities,
+                completedStepCount: planProgress?.completedStepCount
+                    ?? previousProgress?.completedStepCount,
+                totalStepCount: planProgress?.totalStepCount
+                    ?? previousProgress?.totalStepCount
+            )
+        }
+
         return RolloutRecord(
             thread: ActiveThread(
                 id: record.thread.id,
@@ -416,7 +447,8 @@ public actor RolloutScanner {
                 startedAt: startedAt,
                 updatedAt: updatedAt,
                 isActive: isActive,
-                lastAssistantResult: update.latestAssistantResult ?? record.thread.lastAssistantResult
+                lastAssistantResult: update.latestAssistantResult ?? record.thread.lastAssistantResult,
+                liveProgress: liveProgress
             ),
             isActive: isActive,
             shortTermLimit: update.latestShortTermLimit ?? record.shortTermLimit,
@@ -440,7 +472,8 @@ public actor RolloutScanner {
             startedAt: activeStartedAt ?? updatedAt,
             updatedAt: updatedAt,
             isActive: activeStartedAt != nil,
-            lastAssistantResult: latestEvents.assistantResult
+            lastAssistantResult: latestEvents.assistantResult,
+            liveProgress: latestEvents.liveProgress
         )
         return RolloutRecord(
             thread: thread,
@@ -606,7 +639,8 @@ public actor RolloutScanner {
                 task: nil,
                 shortTermLimit: nil,
                 weeklyLimit: nil,
-                assistantResult: nil
+                assistantResult: nil,
+                liveProgress: nil
             )
         }
         defer { try? handle.close() }
@@ -619,6 +653,8 @@ public actor RolloutScanner {
         var latestShortTermLimit: WeeklyLimitUsage?
         var latestWeeklyLimit: WeeklyLimitUsage?
         var latestAssistantResult: String?
+        var currentTurnLines: [Data] = []
+        var foundLatestTaskStart = false
 
         while position > 0 {
             let readStart = position > chunkSize ? position - chunkSize : 0
@@ -630,7 +666,8 @@ public actor RolloutScanner {
                         task: latestTask,
                         shortTermLimit: latestShortTermLimit,
                         weeklyLimit: latestWeeklyLimit,
-                        assistantResult: latestAssistantResult
+                        assistantResult: latestAssistantResult,
+                        liveProgress: liveProgress(in: currentTurnLines.reversed())
                     )
                 }
 
@@ -645,13 +682,19 @@ public actor RolloutScanner {
                 }
 
                 for line in lines.reversed() {
-                    let events = RolloutTailReader.lineEvents(in: Data(line))
+                    let lineData = Data(line)
+                    let events = RolloutTailReader.lineEvents(in: lineData)
                     latestTask = latestTask ?? events.task
                     latestShortTermLimit = latestShortTermLimit ?? events.shortTermLimit
                     latestWeeklyLimit = latestWeeklyLimit ?? events.weeklyLimit
                     latestAssistantResult = latestAssistantResult
-                        ?? RolloutTailReader.assistantResult(in: Data(line))
-                    if latestTask != nil,
+                        ?? RolloutTailReader.assistantResult(in: lineData)
+                    if !foundLatestTaskStart {
+                        currentTurnLines.append(lineData)
+                        foundLatestTaskStart = events.task?.type == "task_started"
+                    }
+                    if foundLatestTaskStart,
+                       latestTask != nil,
                        latestShortTermLimit != nil,
                        latestWeeklyLimit != nil,
                        latestAssistantResult != nil {
@@ -659,7 +702,8 @@ public actor RolloutScanner {
                             task: latestTask,
                             shortTermLimit: latestShortTermLimit,
                             weeklyLimit: latestWeeklyLimit,
-                            assistantResult: latestAssistantResult
+                            assistantResult: latestAssistantResult,
+                            liveProgress: liveProgress(in: currentTurnLines.reversed())
                         )
                     }
                 }
@@ -668,7 +712,8 @@ public actor RolloutScanner {
                     task: latestTask,
                     shortTermLimit: latestShortTermLimit,
                     weeklyLimit: latestWeeklyLimit,
-                    assistantResult: latestAssistantResult
+                    assistantResult: latestAssistantResult,
+                    liveProgress: liveProgress(in: currentTurnLines.reversed())
                 )
             }
             position = readStart
@@ -680,12 +725,37 @@ public actor RolloutScanner {
             latestWeeklyLimit = latestWeeklyLimit ?? events.weeklyLimit
             latestAssistantResult = latestAssistantResult
                 ?? RolloutTailReader.assistantResult(in: leadingFragment)
+            if !foundLatestTaskStart {
+                currentTurnLines.append(leadingFragment)
+            }
         }
         return LatestRolloutEvents(
             task: latestTask,
             shortTermLimit: latestShortTermLimit,
             weeklyLimit: latestWeeklyLimit,
-            assistantResult: latestAssistantResult
+            assistantResult: latestAssistantResult,
+            liveProgress: liveProgress(in: currentTurnLines.reversed())
+        )
+    }
+
+    private func liveProgress<S: Sequence>(in lines: S) -> CodexLiveProgress? where S.Element == Data {
+        var activities: [String] = []
+        var planProgress: CodexLiveProgress?
+        for line in lines {
+            if let activity = RolloutTailReader.activityMessage(in: line), activities.last != activity {
+                activities.append(activity)
+                activities = Array(activities.suffix(3))
+            }
+            planProgress = RolloutTailReader.planProgress(in: line) ?? planProgress
+        }
+        if activities.isEmpty {
+            activities = planProgress?.activities ?? []
+        }
+        guard !activities.isEmpty || planProgress != nil else { return nil }
+        return CodexLiveProgress(
+            activities: activities,
+            completedStepCount: planProgress?.completedStepCount,
+            totalStepCount: planProgress?.totalStepCount
         )
     }
 
