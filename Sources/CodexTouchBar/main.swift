@@ -46,6 +46,18 @@ private func runDiagnostics() {
                 .compactMap { $0 }
                 .joined(separator: ",")
                 print("\(group.name)\t\(group.threads.count)\t\(state)\t\(group.threads.map(\.id).joined(separator: ","))")
+                for thread in group.threads {
+                    guard let progress = thread.liveProgress else { continue }
+                    let steps: String
+                    if let completed = progress.completedStepCount,
+                       let total = progress.totalStepCount,
+                       total > 0 {
+                        steps = "\(completed)/\(total)"
+                    } else {
+                        steps = "indeterminate"
+                    }
+                    print("Progress\t\(thread.id)\t\(steps)\t\(progress.currentActivity ?? "-")")
+                }
             }
         }
         exit(EXIT_SUCCESS)
