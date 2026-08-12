@@ -163,6 +163,45 @@ import Testing
     #expect(input?.redComponent == 39.0 / 255.0)
 }
 
+@Test func voiceMemoGuardianRequiresSustainedQuietBeforeReminding() {
+    let now = Date(timeIntervalSince1970: 10_000)
+    #expect(VoiceMemoSilencePolicy.isSilent(meanDB: -50, peakDB: -35))
+    #expect(!VoiceMemoSilencePolicy.isSilent(meanDB: -40, peakDB: -35))
+    #expect(!VoiceMemoSilencePolicy.isSilent(meanDB: -50, peakDB: -20))
+    #expect(!VoiceMemoSilencePolicy.shouldRemind(
+        silentSince: now.addingTimeInterval(-299),
+        now: now
+    ))
+    #expect(VoiceMemoSilencePolicy.shouldRemind(
+        silentSince: now.addingTimeInterval(-300),
+        now: now
+    ))
+}
+
+@Test func voiceMemoGuardianOverridesTheFloatingPillWithRecordingState() {
+    let startedAt = Date(timeIntervalSince1970: 1_000)
+    let now = startedAt.addingTimeInterval(42 * 60)
+    let recording = DesktopFloatingButtonPresentation.recordingGuardian(
+        VoiceMemoGuardianState(phase: .recording, startedAt: startedAt, silentSince: nil),
+        now: now
+    )
+    let silence = DesktopFloatingButtonPresentation.recordingGuardian(
+        VoiceMemoGuardianState(
+            phase: .silence,
+            startedAt: startedAt,
+            silentSince: now.addingTimeInterval(-5 * 60)
+        ),
+        now: now
+    )
+
+    #expect(recording.displayText == "录音 42分")
+    #expect(recording.tintColor == .systemRed)
+    #expect(recording.pulses)
+    #expect(silence.displayText == "静音 5分")
+    #expect(silence.tintColor == .systemOrange)
+    #expect(!silence.pulses)
+}
+
 @Test func floatingStatusButtonUsesACompactPillHitTarget() {
     #expect(DesktopFloatingButtonLayout.size == NSSize(width: 108, height: 38))
     #expect(DesktopFloatingButtonLayout.canvasSize == NSSize(width: 120, height: 50))
@@ -195,6 +234,20 @@ import Testing
         contentInsets: NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
     )
     #expect(snapped.origin == NSPoint(x: 1_326, y: -6))
+}
+
+@Test func floatingPillIsClampedBackInsideTheCurrentScreen() {
+    let screen = NSRect(x: 0, y: 89, width: 1_440, height: 781)
+    let offscreen = NSRect(x: 680, y: 915, width: 120, height: 50)
+    let inset = DesktopFloatingButtonLayout.animationInset
+    let clamped = DesktopWindowVisibility.clampedFrame(
+        offscreen,
+        in: screen,
+        contentInsets: NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
+    )
+
+    #expect(clamped.origin.x == 680)
+    #expect(clamped.maxY - inset == screen.maxY)
 }
 
 @Test func expandedPanelAndCollapsedPillShareTheSameTopRightAnchor() {

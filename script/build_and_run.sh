@@ -84,6 +84,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$MIN_SYSTEM_VERSION</string>
   <key>LSUIElement</key>
   <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>仅分析实时音量以提醒长时间静音，不保存或上传音频。</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
 </dict>

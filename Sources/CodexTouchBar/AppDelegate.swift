@@ -1,5 +1,6 @@
 import AppKit
 import CodexTouchBarCore
+import UserNotifications
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -11,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let alwaysShowDefaultsKey = "touchBarAlwaysShow"
     private static let desktopPanelVisibleDefaultsKey = "desktopPanelVisible"
     private static let backgroundPanelModeDefaultsKey = "backgroundPanelMode"
+    private static let recordingReminderCategory = "voice-memo-silence-reminder"
+    private static let finishRecordingAction = "finish-and-keep-voice-memo"
+    private static let continueRecordingAction = "continue-voice-memo"
 
     private let scanner = RolloutScanner()
     private let automationStatusScanner = AutomationStatusScanner()
@@ -19,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let touchBarController = TouchBarController()
     private let desktopPanelController = DesktopStatusPanelController()
     private let voiceMemoLauncher = VoiceMemoLauncher()
+    private let voiceMemoGuardian = VoiceMemoGuardian()
     private let recordingHotKey = GlobalRecordingHotKey()
     private let accessibilityController = CodexAccessibilityController()
     private var statusItem: NSStatusItem?
@@ -26,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var enabledMenuItem: NSMenuItem?
     private var alwaysShowMenuItem: NSMenuItem?
     private var desktopPanelMenuItem: NSMenuItem?
+    private var finishVoiceMemoMenuItem: NSMenuItem?
+    private var continueVoiceMemoMenuItem: NSMenuItem?
     private var refreshTimer: Timer?
     private var scheduledRefreshInterval: TimeInterval?
     private var refreshInFlight = false
@@ -37,6 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var latestHasActiveWork = false
     private var conversationInFlight = false
     private var cardConversationsInFlight: Set<String> = []
+    private var voiceMemoGuardianState: VoiceMemoGuardianState?
+    private var didRequestRecordingNotificationAuthorization = false
+    private var recordingNotificationsAuthorized = false
 
     private var isEnabled: Bool {
         get {
@@ -70,7 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isBackgroundPanelMode: Bool {
         get {
             if UserDefaults.standard.object(forKey: Self.backgroundPanelModeDefaultsKey) == nil {
-                return true
+                return false
             }
             return UserDefaults.standard.bool(forKey: Self.backgroundPanelModeDefaultsKey)
         }
@@ -101,9 +111,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // launch should always restore the primary task dashboard.
         isDesktopPanelVisible = true
         configureStatusItem()
+        configureRecordingNotifications()
         LaunchAtLoginController.registerIfNeeded()
+        // Voice Memo recording state and the explicit “finish and keep” action
+        // are exposed only through macOS Accessibility.
+        _ = accessibilityController.requestAccessibilityAccess()
         recordingHotKey.onPressed = { [weak self] in
             self?.startVoiceMemoRecording()
+        }
+        voiceMemoGuardian.onStateChanged = { [weak self] state in
+            guard let self else { return }
+            voiceMemoGuardianState = state
+            desktopPanelController.updateRecordingGuardian(state)
+            finishVoiceMemoMenuItem?.isHidden = state == nil
+            continueVoiceMemoMenuItem?.isHidden = state?.phase != .silence
+            if state != nil { requestRecordingNotificationAuthorizationIfNeeded() }
+        }
+        voiceMemoGuardian.onSilenceReminder = { [weak self] state in
+            self?.showRecordingSilenceReminder(state)
         }
         do {
             try recordingHotKey.register()
@@ -162,10 +187,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if isDesktopPanelVisible {
             desktopPanelController.showCollapsed()
         }
+        voiceMemoGuardian.start()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        voiceMemoGuardian.stop()
         recordingHotKey.unregister()
         touchBarController.dismiss()
         desktopPanelController.hide()
@@ -238,6 +265,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startVoiceMemoItem.target = self
         menu.addItem(startVoiceMemoItem)
 
+        let finishVoiceMemoItem = NSMenuItem(
+            title: "结束当前录音并保留",
+            action: #selector(finishVoiceMemoFromMenu),
+            keyEquivalent: ""
+        )
+        finishVoiceMemoItem.target = self
+        finishVoiceMemoItem.isHidden = true
+        menu.addItem(finishVoiceMemoItem)
+
+        let continueVoiceMemoItem = NSMenuItem(
+            title: "继续当前录音",
+            action: #selector(continueVoiceMemoFromMenu),
+            keyEquivalent: ""
+        )
+        continueVoiceMemoItem.target = self
+        continueVoiceMemoItem.isHidden = true
+        menu.addItem(continueVoiceMemoItem)
+
         menu.addItem(.separator())
         let restartItem = NSMenuItem(title: "重启应用", action: #selector(restartApplication), keyEquivalent: "")
         restartItem.target = self
@@ -253,6 +298,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.enabledMenuItem = enabledMenuItem
         self.alwaysShowMenuItem = alwaysShowMenuItem
         self.desktopPanelMenuItem = desktopPanelMenuItem
+        self.finishVoiceMemoMenuItem = finishVoiceMemoItem
+        self.continueVoiceMemoMenuItem = continueVoiceMemoItem
 
         if !touchBarController.isAvailable {
             statusMenuItem.title = "当前系统不支持 Touch Bar 常驻接口"
@@ -635,6 +682,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startVoiceMemoRecording()
     }
 
+    private func finishVoiceMemoRecording() {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await voiceMemoLauncher.finishAndKeep()
+                showTransientStatus("录音已结束并保留；将自动进入会议纪要流程")
+            } catch {
+                if case VoiceMemoLauncher.LauncherError.accessibilityRequired = error {
+                    _ = accessibilityController.requestAccessibilityAccess()
+                }
+                showSettingError(error)
+            }
+        }
+    }
+
+    @objc private func finishVoiceMemoFromMenu() {
+        finishVoiceMemoRecording()
+    }
+
+    @objc private func continueVoiceMemoFromMenu() {
+        voiceMemoGuardian.continueRecording()
+        showTransientStatus("继续录音；15 分钟内不重复提醒")
+    }
+
+    private func configureRecordingNotifications() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        let finish = UNNotificationAction(
+            identifier: Self.finishRecordingAction,
+            title: "结束并保留",
+            options: [.foreground]
+        )
+        let keepGoing = UNNotificationAction(
+            identifier: Self.continueRecordingAction,
+            title: "继续录音",
+            options: []
+        )
+        center.setNotificationCategories([UNNotificationCategory(
+            identifier: Self.recordingReminderCategory,
+            actions: [finish, keepGoing],
+            intentIdentifiers: [],
+            options: []
+        )])
+    }
+
+    private func requestRecordingNotificationAuthorizationIfNeeded() {
+        guard !didRequestRecordingNotificationAuthorization else { return }
+        didRequestRecordingNotificationAuthorization = true
+        RecordingNotificationAuthorization.request { [weak self] granted in
+            Task { @MainActor in
+                self?.recordingNotificationsAuthorized = granted
+            }
+        }
+    }
+
+    private func showRecordingSilenceReminder(_ state: VoiceMemoGuardianState) {
+        guard recordingNotificationsAuthorized else {
+            showRecordingSilenceAlert()
+            return
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "语音备忘录可能仍在录音"
+        content.body = "已连续静音 5 分钟。请选择结束并保留，或继续录音。"
+        content.sound = .default
+        content.categoryIdentifier = Self.recordingReminderCategory
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "voice-memo-silence-\(Int(state.startedAt.timeIntervalSince1970))",
+            content: content,
+            trigger: nil
+        ))
+    }
+
+    private func showRecordingSilenceAlert() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "语音备忘录可能仍在录音"
+        alert.informativeText = "已连续静音 5 分钟。录音不会自动停止。"
+        alert.addButton(withTitle: "结束并保留")
+        alert.addButton(withTitle: "继续录音")
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        if alert.runModal() == .alertFirstButtonReturn {
+            finishVoiceMemoRecording()
+        } else {
+            voiceMemoGuardian.continueRecording()
+        }
+    }
+
     @objc private func frontmostApplicationChanged(_ notification: Notification) {
         updateRefreshSchedule()
         if shouldPresentDashboard {
@@ -738,5 +872,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let action = response.actionIdentifier
+        completionHandler()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            switch action {
+            case Self.finishRecordingAction:
+                finishVoiceMemoRecording()
+            case Self.continueRecordingAction:
+                voiceMemoGuardian.continueRecording()
+                showTransientStatus("继续录音；15 分钟内不重复提醒")
+            default:
+                break
+            }
+        }
+    }
+}
+
+private enum RecordingNotificationAuthorization {
+    nonisolated static func request(
+        completion: @escaping @Sendable (Bool) -> Void
+    ) {
+        UNUserNotificationCenter.current().requestAuthorization(
+            options: [.alert, .sound]
+        ) { granted, _ in
+            completion(granted)
+        }
     }
 }

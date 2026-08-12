@@ -38,8 +38,10 @@ let package = Package(
             path: "Sources/CodexTouchBar",
             linkerSettings: [
                 .linkedFramework("ApplicationServices"),
+                .linkedFramework("AVFoundation"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("ServiceManagement"),
+                .linkedFramework("UserNotifications"),
             ]
         ),
         .testTarget(

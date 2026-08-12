@@ -46,6 +46,23 @@ enum DesktopWindowEdgeSnap {
     }
 }
 
+enum DesktopWindowVisibility {
+    static func clampedFrame(
+        _ frame: NSRect,
+        in visibleFrame: NSRect,
+        contentInsets: NSEdgeInsets = DesktopWindowEdgeSnap.noInsets
+    ) -> NSRect {
+        var clamped = frame
+        let minimumX = visibleFrame.minX - contentInsets.left
+        let maximumX = visibleFrame.maxX - frame.width + contentInsets.right
+        let minimumY = visibleFrame.minY - contentInsets.bottom
+        let maximumY = visibleFrame.maxY - frame.height + contentInsets.top
+        clamped.origin.x = min(max(frame.origin.x, minimumX), maximumX)
+        clamped.origin.y = min(max(frame.origin.y, minimumY), maximumY)
+        return clamped
+    }
+}
+
 enum DesktopPanelAnchorLayout {
     static func panelFrame(
         anchoredToFloatingPanel floatingFrame: NSRect,
@@ -215,6 +232,18 @@ struct DesktopFloatingButtonPresentation: Equatable {
             ))
         }
         return pages
+    }
+
+    static func recordingGuardian(_ state: VoiceMemoGuardianState, now: Date = Date()) -> Self {
+        let isSilent = state.phase == .silence
+        return Self(
+            displayText: state.displayText(at: now),
+            tintColor: isSilent ? .systemOrange : .systemRed,
+            pulses: !isSilent,
+            accessibilityLabel: isSilent
+                ? "语音备忘录可能已结束；\(state.displayText(at: now))"
+                : "语音备忘录正在录音；\(state.displayText(at: now))"
+        )
     }
 
     private static func quota(
@@ -537,6 +566,10 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
             contentSignature: contentSignature,
             newRowCount: layout.rowCount
         )
+    }
+
+    func updateRecordingGuardian(_ state: VoiceMemoGuardianState?) {
+        floatingButtonView.updateRecordingGuardian(state)
     }
 
     func setNewConversationBusy(_ isBusy: Bool) {
@@ -1213,6 +1246,15 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
                 y: frame.maxY - size.height - 20
             ))
         }
+        if let screen = screenMostCovered(by: floatingPanel.frame) {
+            let inset = DesktopFloatingButtonLayout.animationInset
+            let visibleFrame = DesktopWindowVisibility.clampedFrame(
+                floatingPanel.frame,
+                in: screen.visibleFrame,
+                contentInsets: NSEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)
+            )
+            floatingPanel.setFrameOrigin(visibleFrame.origin)
+        }
         didPositionFloatingPanel = true
         alignPanelToFloatingPanel()
     }
@@ -1279,6 +1321,7 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     private var carouselPresentations: [DesktopFloatingButtonPresentation] = []
     private var carouselIndex = 0
     private var carouselTimer: Timer?
+    private var recordingGuardianState: VoiceMemoGuardianState?
     private var isHovering = false
 
     override init(frame frameRect: NSRect) {
@@ -1424,7 +1467,18 @@ final class FloatingStatusButtonView: NSVisualEffectView {
             carouselIndex = 0
         }
         carouselPresentations = nextPresentations
+        guard recordingGuardianState == nil else { return }
         apply(nextPresentations[carouselIndex], isCarouselAdvance: false)
+    }
+
+    func updateRecordingGuardian(_ state: VoiceMemoGuardianState?) {
+        recordingGuardianState = state
+        if let state {
+            apply(.recordingGuardian(state), isCarouselAdvance: false)
+        } else if !carouselPresentations.isEmpty {
+            carouselIndex = min(carouselIndex, carouselPresentations.count - 1)
+            apply(carouselPresentations[carouselIndex], isCarouselAdvance: false)
+        }
     }
 
     private func update(items: [WorkItem], latestCompleted: WorkItem?) {
@@ -1438,6 +1492,10 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     }
 
     @objc func advanceCarousel() {
+        if let recordingGuardianState {
+            apply(.recordingGuardian(recordingGuardianState), isCarouselAdvance: false)
+            return
+        }
         guard carouselPresentations.count > 1 else { return }
         carouselIndex = (carouselIndex + 1) % carouselPresentations.count
         apply(carouselPresentations[carouselIndex], isCarouselAdvance: true)
