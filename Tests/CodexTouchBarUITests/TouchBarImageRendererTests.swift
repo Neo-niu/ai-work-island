@@ -140,6 +140,20 @@ import Testing
     #expect(DesktopPanelLayout.conversationContentWidth == 322)
 }
 
+@Test func conversationCardReservesTwoLineStatusHeight() {
+    let withoutConversation = DesktopPanelLayout.contentSize(
+        visibleItemCount: 1,
+        sectionCount: 1
+    )
+    let withConversation = DesktopPanelLayout.contentSize(
+        visibleItemCount: 1,
+        sectionCount: 1,
+        conversationItemCount: 1
+    )
+
+    #expect(withConversation.height - withoutConversation.height == 54)
+}
+
 @Test func desktopPanelResizePolicyAllowsAUsefulWidthAndHeightRange() {
     #expect(DesktopPanelResizePolicy.minimumFrameSize == NSSize(width: 320, height: 260))
     #expect(DesktopPanelResizePolicy.maximumFrameSize == NSSize(width: 620, height: 746))
@@ -147,8 +161,20 @@ import Testing
         DesktopPanelResizePolicy.clampedFrameSize(NSSize(width: 280, height: 900))
             == NSSize(width: 320, height: 746)
     )
-    #expect(DesktopPanelResizePolicy.shouldAutomaticallyFit(hasUserPreferredSize: false))
-    #expect(!DesktopPanelResizePolicy.shouldAutomaticallyFit(hasUserPreferredSize: true))
+    #expect(
+        DesktopPanelResizePolicy.automaticallyFittedContentSize(
+            NSSize(width: 372, height: 618),
+            currentContentSize: NSSize(width: 500, height: 320),
+            hasUserPreferredSize: false
+        ) == NSSize(width: 372, height: 618)
+    )
+    #expect(
+        DesktopPanelResizePolicy.automaticallyFittedContentSize(
+            NSSize(width: 372, height: 618),
+            currentContentSize: NSSize(width: 500, height: 320),
+            hasUserPreferredSize: true
+        ) == NSSize(width: 500, height: 618)
+    )
 }
 
 @Test func desktopPanelUsesTheSelectedSmokeGrayPalette() {

@@ -204,7 +204,7 @@ enum RolloutTailReader {
 
     private static func planSteps(inExecInput input: String) -> [[String: Any]] {
         guard input.contains("tools.update_plan(") else { return [] }
-        let pattern = #"step\s*:\s*\"((?:\\.|[^\"\\])*)\"\s*,\s*status\s*:\s*\"(completed|in_progress|pending)\""#
+        let pattern = "\"?step\"?\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*,\\s*\"?status\"?\\s*:\\s*\"(completed|in_progress|pending)\""
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
         let range = NSRange(input.startIndex..<input.endIndex, in: input)
         return regex.matches(in: input, range: range).compactMap { match in

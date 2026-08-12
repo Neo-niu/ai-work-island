@@ -640,6 +640,17 @@ private func rollout(
     #expect(progress?.currentActivity == "验证界面")
 }
 
+@Test func tailReaderReadsQuotedKeysFromDesktopExecPlan() {
+    let line = Data(#"""
+    {"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const r = await tools.update_plan({plan:[{step:\"读取项目\",\"status\":\"completed\"},{step:\"验证界面\",\"status\":\"in_progress\"}]}); text(r);"}}
+    """#.utf8)
+
+    let progress = RolloutTailReader.planProgress(in: line)
+    #expect(progress?.completedStepCount == 1)
+    #expect(progress?.totalStepCount == 2)
+    #expect(progress?.currentActivity == "验证界面")
+}
+
 @Test func tailReaderResetsLiveProgressAtANewTaskStart() throws {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: url) }

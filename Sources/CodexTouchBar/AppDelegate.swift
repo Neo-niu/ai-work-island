@@ -452,6 +452,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ thread: ActiveThread,
         successMessage: String
     ) {
+        if let title = thread.title,
+           !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let codex = NSRunningApplication.runningApplications(
+            withBundleIdentifier: Self.codexBundleIdentifier
+        ).first {
+            codex.activate(options: [.activateIgnoringOtherApps])
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    try await CodexAccessibilityController().openVisibleThread(title: title)
+                    self.finishOpeningThread(thread.id, successMessage: successMessage)
+                } catch {
+                    self.openThreadUsingDeepLink(thread, successMessage: successMessage)
+                }
+            }
+            return
+        }
+        openThreadUsingDeepLink(thread, successMessage: successMessage)
+    }
+
+    private func openThreadUsingDeepLink(
+        _ thread: ActiveThread,
+        successMessage: String
+    ) {
         guard let url = URL(string: "codex://threads/\(thread.id)") else {
             showTransientStatus("无法生成目标会话链接")
             return
@@ -460,7 +484,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showTransientStatus("Codex 未接受会话跳转")
             return
         }
-        markThreadViewed(thread.id)
+        finishOpeningThread(thread.id, successMessage: successMessage)
+    }
+
+    private func finishOpeningThread(_ threadID: String, successMessage: String) {
+        markThreadViewed(threadID)
         requestRefresh()
         showTransientStatus(successMessage)
     }

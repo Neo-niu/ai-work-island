@@ -181,13 +181,14 @@ final class CodexAccessibilityController {
         guard hasAccessibilityAccess() else {
             throw ControllerError.accessibilityPermissionRequired
         }
-        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.codexBundleIdentifier else {
-            throw ControllerError.codexMustBeFrontmost
-        }
         guard let application = NSRunningApplication.runningApplications(
             withBundleIdentifier: Self.codexBundleIdentifier
         ).first else {
             throw ControllerError.codexNotRunning
+        }
+        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier != Self.codexBundleIdentifier {
+            application.activate(options: [.activateIgnoringOtherApps])
+            try await Task.sleep(nanoseconds: 250_000_000)
         }
 
         let root = AXUIElementCreateApplication(application.processIdentifier)
@@ -320,6 +321,7 @@ final class CodexAccessibilityController {
         keyUp.post(tap: .cghidEventTap)
         return true
     }
+
 
     private func currentServiceTier() -> String? {
         let configURL = FileManager.default.homeDirectoryForCurrentUser

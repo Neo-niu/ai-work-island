@@ -29,7 +29,6 @@ public enum CodexCommandKeymap {
         command: "composer.toggleFastMode",
         key: "Cmd+Ctrl+Alt+F19"
     )
-
     public static let privateBindings = [
         increaseEffortBinding,
         decreaseEffortBinding,

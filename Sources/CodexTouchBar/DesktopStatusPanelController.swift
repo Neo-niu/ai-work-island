@@ -104,7 +104,7 @@ enum DesktopPanelLayout {
         let baseHeight = 184
         let itemHeight = max(1, visibleItemCount) * 62
         let sectionHeight = sectionCount * 22
-        let conversationHeight = conversationItemCount * 40
+        let conversationHeight = conversationItemCount * 54
         let height = CGFloat(baseHeight + itemHeight + sectionHeight + conversationHeight)
         return NSSize(width: width, height: min(height, 700))
     }
@@ -121,8 +121,15 @@ enum DesktopPanelResizePolicy {
         )
     }
 
-    static func shouldAutomaticallyFit(hasUserPreferredSize: Bool) -> Bool {
-        !hasUserPreferredSize
+    static func automaticallyFittedContentSize(
+        _ contentSize: NSSize,
+        currentContentSize: NSSize,
+        hasUserPreferredSize: Bool
+    ) -> NSSize {
+        NSSize(
+            width: hasUserPreferredSize ? currentContentSize.width : contentSize.width,
+            height: contentSize.height
+        )
     }
 }
 
@@ -677,18 +684,21 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         footerLabel.stringValue = "状态文件异常 \(snapshot.automationIssues.count)"
         footerLabel.textColor = .systemRed
 
-        if resizeImmediately && DesktopPanelResizePolicy.shouldAutomaticallyFit(
-            hasUserPreferredSize: hasUserPreferredPanelSize
-        ) {
+        if resizeImmediately {
+            let fittedContentSize = DesktopPanelResizePolicy.automaticallyFittedContentSize(
+                DesktopPanelLayout.contentSize(
+                    visibleItemCount: layout.rowCount,
+                    sectionCount: layout.sections.count,
+                    conversationItemCount: layout.sections
+                        .flatMap(\.items)
+                        .filter { $0.id.hasPrefix("codex:") }
+                        .count
+                ),
+                currentContentSize: panel.contentView?.bounds.size ?? panel.contentLayoutRect.size,
+                hasUserPreferredSize: hasUserPreferredPanelSize
+            )
             isAutomaticallySizingPanel = true
-            panel.setContentSize(DesktopPanelLayout.contentSize(
-                visibleItemCount: layout.rowCount,
-                sectionCount: layout.sections.count,
-                conversationItemCount: layout.sections
-                    .flatMap(\.items)
-                    .filter { $0.id.hasPrefix("codex:") }
-                    .count
-            ))
+            panel.setContentSize(fittedContentSize)
             isAutomaticallySizingPanel = false
         }
     }
@@ -723,12 +733,14 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
                     .filter { $0.id.hasPrefix("codex:") }
                     .count
             )
-            let shouldResizePanel = DesktopPanelResizePolicy.shouldAutomaticallyFit(
+            let fittedContentSize = DesktopPanelResizePolicy.automaticallyFittedContentSize(
+                contentSize,
+                currentContentSize: panel.contentView?.bounds.size ?? panel.contentLayoutRect.size,
                 hasUserPreferredSize: hasUserPreferredPanelSize
             )
-            let outerSize = shouldResizePanel
-                ? panel.frameRect(forContentRect: NSRect(origin: .zero, size: contentSize)).size
-                : panel.frame.size
+            let outerSize = panel.frameRect(
+                forContentRect: NSRect(origin: .zero, size: fittedContentSize)
+            ).size
             var targetFrame = panel.frame
             targetFrame.origin.y = panel.frame.maxY - outerSize.height
             targetFrame.size = outerSize
@@ -750,10 +762,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
                 context.duration = 0.34
                 context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                 context.allowsImplicitAnimation = true
-                if shouldResizePanel {
-                    isAutomaticallySizingPanel = true
-                    panel.animator().setFrame(targetFrame, display: true)
-                }
+                isAutomaticallySizingPanel = true
+                panel.animator().setFrame(targetFrame, display: true)
                 itemStack.animator().alphaValue = 1
             } completionHandler: { [weak self] in
                 guard let self else { return }
@@ -2097,15 +2107,20 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
         if item.id.hasPrefix("codex:") {
             let conversationStatusText: String
             if item.status == .running {
-                var parts: [String] = []
+                var primaryParts: [String] = []
                 if let count = item.phaseCount, count > 0 {
                     let current = min(max(item.phaseIndex ?? 0, 0), count)
-                    parts.append("进度 \(current)/\(count)")
+                    primaryParts.append("进度 \(current)/\(count)")
                 }
-                if let recentActivity = item.recentActivity {
-                    parts.append("刚刚：\(recentActivity)")
+                if let phase = item.phase {
+                    primaryParts.append("正在：\(phase)")
                 }
-                conversationStatusText = parts.isEmpty ? "正在等待新的运行动态" : parts.joined(separator: " · ")
+                let primary = primaryParts.isEmpty
+                    ? "正在等待新的运行动态"
+                    : primaryParts.joined(separator: " · ")
+                conversationStatusText = item.recentActivity.map {
+                    "\(primary)\n刚刚：\($0)"
+                } ?? primary
             } else {
                 conversationStatusText = "上轮：\(lastAssistantResult ?? "暂无可显示结果")"
             }
@@ -2113,7 +2128,8 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
             conversationStatusLabel.font = .systemFont(ofSize: 10)
             conversationStatusLabel.textColor = .tertiaryLabelColor
             conversationStatusLabel.lineBreakMode = .byTruncatingTail
-            conversationStatusLabel.maximumNumberOfLines = 1
+            conversationStatusLabel.maximumNumberOfLines = 2
+            conversationStatusLabel.cell?.wraps = true
             conversationStatusLabel.toolTip = conversationStatusText
             conversationStatusLabel.setContentCompressionResistancePriority(
                 .defaultLow,
@@ -2188,7 +2204,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
             stack.translatesAutoresizingMaskIntoConstraints = false
             addSubview(stack)
             NSLayoutConstraint.activate([
-                heightAnchor.constraint(equalToConstant: 102),
+                heightAnchor.constraint(equalToConstant: 116),
                 stack.leadingAnchor.constraint(
                     equalTo: leadingAnchor,
                     constant: DesktopPanelLayout.workItemHorizontalInset
