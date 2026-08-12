@@ -2,6 +2,16 @@ import AppKit
 @testable import CodexTouchBar
 import Testing
 
+@Test func workIslandNewThreadsUseFullAccessWithoutApprovalPrompts() {
+    let cwd = URL(fileURLWithPath: "/tmp/work-island-test")
+    let params = CodexConversationBridge.newThreadStartParams(cwd: cwd)
+
+    #expect(params["cwd"] as? String == cwd.path)
+    #expect(params["approvalPolicy"] as? String == "never")
+    #expect(params["sandbox"] as? String == "danger-full-access")
+    #expect(params["ephemeral"] as? Bool == false)
+}
+
 @MainActor
 @Test func commandVPastesAnImageIntoTheConversationPrompt() throws {
     let pasteboard = NSPasteboard.general

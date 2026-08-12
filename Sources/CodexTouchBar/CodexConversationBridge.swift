@@ -41,6 +41,17 @@ enum CodexConversationBridgeError: LocalizedError, Sendable {
 }
 
 enum CodexConversationBridge {
+    static func newThreadStartParams(cwd: URL) -> [String: Any] {
+        [
+            "cwd": cwd.path,
+            "serviceName": "codex-desktop",
+            "threadSource": "vscode",
+            "ephemeral": false,
+            "approvalPolicy": "never",
+            "sandbox": "danger-full-access",
+        ]
+    }
+
     static func send(
         prompt: CodexPrompt,
         route: CodexConversationRoute
@@ -173,12 +184,7 @@ private enum CodexAppServerInvocation {
             try write([
                 "method": "thread/start",
                 "id": threadID,
-                "params": [
-                    "cwd": cwd.path,
-                    "serviceName": "codex-desktop",
-                    "threadSource": "vscode",
-                    "ephemeral": false,
-                ],
+                "params": CodexConversationBridge.newThreadStartParams(cwd: cwd),
             ], to: writer)
             let response = try waitForResponse(id: threadID, reader: reader, process: process)
             guard let result = response["result"] as? [String: Any],
