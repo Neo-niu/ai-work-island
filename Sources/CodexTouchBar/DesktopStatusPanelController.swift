@@ -207,6 +207,28 @@ struct DesktopFloatingButtonPresentation: Equatable {
         guard !hasPriorityStatus else { return [work] }
 
         var pages = [work]
+        if let quota = snapshot.companyQuota {
+            let amount = quota.remainingUSD >= 10
+                ? String(format: "$%.0f", quota.remainingUSD)
+                : String(format: "$%.1f", quota.remainingUSD)
+            pages.append(Self.quota(
+                displayText: "公司 \(amount)",
+                remainingPercent: quota.remainingPercent,
+                normalTint: .systemPurple,
+                accessibilityText: String(
+                    format: "公司额度剩余$%.2f，剩余%d%%",
+                    quota.remainingUSD,
+                    quota.remainingPercent
+                )
+            ))
+        } else {
+            pages.append(Self(
+                displayText: "公司 待配置",
+                tintColor: .systemPurple,
+                pulses: false,
+                accessibilityLabel: "恢复 AI 工作岛；公司额度待配置，请在 Edge 登录公司模型平台"
+            ))
+        }
         if let limit = snapshot.codexShortTermLimit {
             pages.append(quota(
                 displayText: "5时 \(limit.remainingPercent)%",
@@ -221,21 +243,6 @@ struct DesktopFloatingButtonPresentation: Equatable {
                 remainingPercent: limit.remainingPercent,
                 normalTint: .systemIndigo,
                 accessibilityText: "周额度剩余\(limit.remainingPercent)%"
-            ))
-        }
-        if let quota = snapshot.companyQuota {
-            let amount = quota.remainingUSD >= 10
-                ? String(format: "$%.0f", quota.remainingUSD)
-                : String(format: "$%.1f", quota.remainingUSD)
-            pages.append(Self.quota(
-                displayText: "公司 \(amount)",
-                remainingPercent: quota.remainingPercent,
-                normalTint: .systemPurple,
-                accessibilityText: String(
-                    format: "公司额度剩余$%.2f，剩余%d%%",
-                    quota.remainingUSD,
-                    quota.remainingPercent
-                )
             ))
         }
         return pages
@@ -812,7 +819,12 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
             )
             companyQuotaView.isHidden = false
         } else {
-            companyQuotaView.isHidden = true
+            companyQuotaView.update(
+                title: "公司额度",
+                value: "待配置 · Edge 登录",
+                remainingPercent: nil
+            )
+            companyQuotaView.isHidden = false
         }
         quotaStack.isHidden = codexQuotaView.isHidden && companyQuotaView.isHidden
     }
@@ -1039,7 +1051,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
             newTaskControls.bottomAnchor.constraint(equalTo: newTaskInputBackground.bottomAnchor, constant: -2),
         ])
 
-        quotaStack.setViews([codexQuotaView, companyQuotaView], in: .leading)
+        quotaStack.setViews([companyQuotaView, codexQuotaView], in: .leading)
         quotaStack.orientation = .horizontal
         quotaStack.alignment = .centerY
         quotaStack.distribution = .fillEqually

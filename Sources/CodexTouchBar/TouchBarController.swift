@@ -93,7 +93,12 @@ final class TouchBarController: NSObject {
 
     func showCompanyQuota(_ quota: CompanyModelQuota?) {
         guard let quota else {
-            companyQuotaView.update(title: "公司", remainingPercent: nil)
+            companyQuotaView.update(
+                title: "公司",
+                remainingPercent: nil,
+                detail: "待配置",
+                accessibilityText: "公司额度待配置，请在 Edge 登录公司模型平台"
+            )
             return
         }
         companyQuotaView.update(
@@ -146,8 +151,8 @@ final class TouchBarController: NSObject {
         touchBar.delegate = self
         touchBar.defaultItemIdentifiers = [
             Self.projectStatusItemIdentifier,
-            Self.tokenUsageItemIdentifier,
             Self.companyQuotaItemIdentifier,
+            Self.tokenUsageItemIdentifier,
         ]
         trayItemWasAdded = CTBAddSystemTrayItem(trayItem)
         if trayItemWasAdded {

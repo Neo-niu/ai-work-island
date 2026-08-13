@@ -385,11 +385,21 @@ import Testing
 
     let pages = DesktopFloatingButtonPresentation.carousel(for: snapshot)
 
-    #expect(pages.map(\.displayText) == ["空闲", "5时 71%", "周 58%", "公司 $15"])
-    #expect(pages[1].tintColor == .systemTeal)
-    #expect(pages[2].tintColor == .systemIndigo)
-    #expect(pages[3].tintColor == .systemPurple)
+    #expect(pages.map(\.displayText) == ["空闲", "公司 $15", "5时 71%", "周 58%"])
+    #expect(pages[1].tintColor == .systemPurple)
+    #expect(pages[2].tintColor == .systemTeal)
+    #expect(pages[3].tintColor == .systemIndigo)
     #expect(pages.dropFirst().map(\.pulses) == [false, false, false])
+}
+
+@Test func floatingStatusCarouselPromptsForCompanyQuotaWhenNotConfigured() {
+    let pages = DesktopFloatingButtonPresentation.carousel(for: WorkStatusSnapshot(
+        items: [],
+        automationIssues: []
+    ))
+
+    #expect(pages.map(\.displayText) == ["空闲", "公司 待配置"])
+    #expect(pages[1].accessibilityLabel.contains("Edge 登录公司模型平台"))
 }
 
 @Test func floatingStatusCarouselKeepsAttentionVisibleInsteadOfRotatingQuota() {
@@ -437,8 +447,10 @@ import Testing
 
     #expect(view.displayedTextForTesting() == "空闲")
     view.advanceCarousel()
-    #expect(view.displayedTextForTesting() == "5时 71%")
+    #expect(view.displayedTextForTesting() == "公司 待配置")
     view.update(snapshot: snapshot)
+    #expect(view.displayedTextForTesting() == "公司 待配置")
+    view.advanceCarousel()
     #expect(view.displayedTextForTesting() == "5时 71%")
     view.advanceCarousel()
     #expect(view.displayedTextForTesting() == "周 58%")
