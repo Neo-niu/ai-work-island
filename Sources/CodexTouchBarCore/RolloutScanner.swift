@@ -161,13 +161,23 @@ public actor RolloutScanner {
                 weeklyLimits.append(contentsOf: records.compactMap(\.weeklyLimit))
                 let activeRecords = records.filter(isRecentlyActive)
                 let activeStartedAt = activeRecords.map(\.thread.startedAt).min()
+                let latestResultRecord = records
+                    .filter { $0.thread.id == root.id && $0.thread.lastAssistantResult != nil }
+                    .max { $0.thread.updatedAt < $1.thread.updatedAt }
+                // Opening a conversation updates the SQLite thread recency even when no
+                // new assistant output was produced. Unread state must follow rollout
+                // content instead, otherwise a just-viewed conversation immediately
+                // becomes unread again.
+                let unreadUpdatedAt = latestResultRecord?.thread.updatedAt
+                    ?? records
+                        .filter { $0.thread.id == root.id }
+                        .map(\.thread.updatedAt)
+                        .max()
+                    ?? .distantPast
                 let isUnread = activeStartedAt == nil
                     && unreadThreadIDs.contains(root.id)
-                    && root.updatedAt > (viewedAtByThreadID[root.id] ?? .distantPast)
-                let lastAssistantResult = records
-                    .filter { $0.thread.id == root.id && $0.thread.lastAssistantResult != nil }
-                    .max { $0.thread.updatedAt < $1.thread.updatedAt }?
-                    .thread.lastAssistantResult
+                    && unreadUpdatedAt > (viewedAtByThreadID[root.id] ?? .distantPast)
+                let lastAssistantResult = latestResultRecord?.thread.lastAssistantResult
                 let liveProgress = activeRecords
                     .filter { $0.thread.liveProgress != nil }
                     .max { $0.thread.updatedAt < $1.thread.updatedAt }?

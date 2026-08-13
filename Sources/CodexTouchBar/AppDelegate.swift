@@ -2,16 +2,29 @@ import AppKit
 import CodexTouchBarCore
 import UserNotifications
 
+enum CodexThreadOpeningPolicy {
+    static func requiresWorkIslandTransfer(
+        threadID: String,
+        retainedWorkIslandThreadIDs: Set<String>
+    ) -> Bool {
+        retainedWorkIslandThreadIDs.contains(threadID)
+    }
+}
+
+enum AppReopenPolicy {
+    /// Repeated LaunchServices opens can come from background tooling or system
+    /// services. The island is restored only by its capsule or menu actions.
+    static let shouldRestoreDashboard = false
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let codexBundleIdentifier = "com.openai.codex"
-    private static let restoreDashboardNotification = Notification.Name(
-        "dev.kanyun.CodexHermesTouchBar.restoreDashboard"
-    )
     private static let enabledDefaultsKey = "touchBarEnabled"
     private static let alwaysShowDefaultsKey = "touchBarAlwaysShow"
     private static let desktopPanelVisibleDefaultsKey = "desktopPanelVisible"
     private static let backgroundPanelModeDefaultsKey = "backgroundPanelMode"
+    private static let desktopContentModeDefaultsKey = "desktopContentMode"
     private static let recordingReminderCategory = "voice-memo-silence-reminder"
     private static let finishRecordingAction = "finish-and-keep-voice-memo"
     private static let continueRecordingAction = "continue-voice-memo"
@@ -26,16 +39,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let voiceMemoGuardian = VoiceMemoGuardian()
     private let recordingHotKey = GlobalRecordingHotKey()
     private let accessibilityController = CodexAccessibilityController()
+    private let updateController = GitHubUpdateController(
+        repository: "Neo-niu/ai-work-island",
+        appName: "AI 工作岛"
+    )
     private var statusItem: NSStatusItem?
     private var statusMenuItem: NSMenuItem?
     private var enabledMenuItem: NSMenuItem?
     private var alwaysShowMenuItem: NSMenuItem?
     private var desktopPanelMenuItem: NSMenuItem?
+    private var cleanContentModeMenuItem: NSMenuItem?
+    private var detailedContentModeMenuItem: NSMenuItem?
     private var finishVoiceMemoMenuItem: NSMenuItem?
     private var continueVoiceMemoMenuItem: NSMenuItem?
     private var refreshTimer: Timer?
     private var scheduledRefreshInterval: TimeInterval?
     private var refreshInFlight = false
+    private var refreshPending = false
+    private var companyQuotaRefreshInFlight = false
+    private var latestCompanyQuota: CompanyModelQuota?
+    private var optimisticallyViewedAtByThreadID: [String: Date] = [:]
     private var latestGroups: [ProjectGroup]?
     private var latestThreadCount = 0
     private var latestUnreadThreadCount = 0
@@ -89,23 +112,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
-        let runningPIDs = NSRunningApplication.runningApplications(
-            withBundleIdentifier: Bundle.main.bundleIdentifier ?? ""
-        ).map(\.processIdentifier)
-        if SingleInstancePolicy.shouldTerminate(
-            currentPID: ProcessInfo.processInfo.processIdentifier,
-            runningPIDs: runningPIDs
-        ) {
-            DistributedNotificationCenter.default().post(
-                name: Self.restoreDashboardNotification,
-                object: nil,
-                userInfo: nil
-            )
-            NSApp.terminate(nil)
-            return
+    private var desktopContentMode: DesktopContentMode {
+        get {
+            guard let rawValue = UserDefaults.standard.string(
+                forKey: Self.desktopContentModeDefaultsKey
+            ) else { return .clean }
+            return DesktopContentMode(rawValue: rawValue) ?? .clean
         }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: Self.desktopContentModeDefaultsKey)
+        }
+    }
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         // Closing the dashboard hides it only for the current run. A fresh app
         // launch should always restore the primary task dashboard.
@@ -129,6 +148,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         voiceMemoGuardian.onSilenceReminder = { [weak self] state in
             self?.showRecordingSilenceReminder(state)
+        }
+        voiceMemoGuardian.onWaveformLevelChanged = { [weak self] level in
+            self?.desktopPanelController.updateRecordingWaveformLevel(level)
         }
         do {
             try recordingHotKey.register()
@@ -184,6 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.updateRefreshSchedule()
         }
         desktopPanelController.setDisplayMode(isBackgroundPanelMode ? .background : .floating)
+        desktopPanelController.setContentMode(desktopContentMode)
 
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
@@ -191,20 +214,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSWorkspace.didActivateApplicationNotification,
             object: nil
         )
-        DistributedNotificationCenter.default().addObserver(
-            self,
-            selector: #selector(restoreDashboardFromExplicitOpen),
-            name: Self.restoreDashboardNotification,
-            object: nil
-        )
-
         updateRefreshSchedule()
         requestRefresh()
         updatePresentation()
-        if isDesktopPanelVisible {
+        if ProcessInfo.processInfo.arguments.contains("--ui-review-panel") {
+            desktopPanelController.show()
+        } else if isDesktopPanelVisible {
             desktopPanelController.showCollapsed()
         }
         voiceMemoGuardian.start()
+        if ProcessInfo.processInfo.arguments.contains("--ui-review-recording-waveform") {
+            desktopPanelController.updateRecordingGuardian(
+                VoiceMemoGuardianState(phase: .recording, startedAt: Date(), silentSince: nil)
+            )
+            desktopPanelController.updateRecordingWaveformLevel(0.72)
+        }
+        updateController.scheduleAutomaticCheck()
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        AppReopenPolicy.shouldRestoreDashboard
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -213,8 +245,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         recordingHotKey.unregister()
         touchBarController.dismiss()
         desktopPanelController.hide()
+        updateController.cancel()
         NSWorkspace.shared.notificationCenter.removeObserver(self)
-        DistributedNotificationCenter.default().removeObserver(self)
     }
 
     private func configureStatusItem() {
@@ -265,6 +297,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backgroundPanelModeMenuItem.state = isBackgroundPanelMode ? .on : .off
         menu.addItem(backgroundPanelModeMenuItem)
 
+        let contentModeItem = NSMenuItem(title: "任务信息密度", action: nil, keyEquivalent: "")
+        let contentModeMenu = NSMenu(title: "任务信息密度")
+        let cleanContentModeMenuItem = NSMenuItem(
+            title: DesktopContentMode.clean.title,
+            action: #selector(selectCleanContentMode),
+            keyEquivalent: ""
+        )
+        cleanContentModeMenuItem.target = self
+        cleanContentModeMenuItem.state = desktopContentMode == .clean ? .on : .off
+        contentModeMenu.addItem(cleanContentModeMenuItem)
+        let detailedContentModeMenuItem = NSMenuItem(
+            title: DesktopContentMode.detailed.title,
+            action: #selector(selectDetailedContentMode),
+            keyEquivalent: ""
+        )
+        detailedContentModeMenuItem.target = self
+        detailedContentModeMenuItem.state = desktopContentMode == .detailed ? .on : .off
+        contentModeMenu.addItem(detailedContentModeMenuItem)
+        contentModeItem.submenu = contentModeMenu
+        menu.addItem(contentModeItem)
+
         let openStatusDirectoryItem = NSMenuItem(
             title: "打开自动化状态目录",
             action: #selector(openAutomationStatusDirectory),
@@ -301,6 +354,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(continueVoiceMemoItem)
 
         menu.addItem(.separator())
+        let checkForUpdatesItem = NSMenuItem(
+            title: "检查更新…",
+            action: #selector(checkForUpdates),
+            keyEquivalent: ""
+        )
+        checkForUpdatesItem.target = self
+        menu.addItem(checkForUpdatesItem)
+
         let restartItem = NSMenuItem(title: "重启应用", action: #selector(restartApplication), keyEquivalent: "")
         restartItem.target = self
         menu.addItem(restartItem)
@@ -315,6 +376,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.enabledMenuItem = enabledMenuItem
         self.alwaysShowMenuItem = alwaysShowMenuItem
         self.desktopPanelMenuItem = desktopPanelMenuItem
+        self.cleanContentModeMenuItem = cleanContentModeMenuItem
+        self.detailedContentModeMenuItem = detailedContentModeMenuItem
         self.finishVoiceMemoMenuItem = finishVoiceMemoItem
         self.continueVoiceMemoMenuItem = continueVoiceMemoItem
 
@@ -327,14 +390,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func requestRefresh() {
         guard !refreshInFlight else {
+            refreshPending = true
             return
         }
         refreshInFlight = true
 
-        Task { [weak self, scanner, automationStatusScanner, companyQuotaScanner, grouper] in
+        Task { [weak self, scanner, automationStatusScanner, grouper] in
             let snapshot = await scanner.scanSnapshot()
             let automationResult = automationStatusScanner.scan()
-            let companyQuota = await companyQuotaScanner.scanIfNeeded()
             guard let self else {
                 return
             }
@@ -350,20 +413,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 groups: groups,
                 shortTermLimit: snapshot.shortTermLimit,
                 weeklyLimit: snapshot.weeklyLimit,
-                companyQuota: companyQuota,
+                companyQuota: self.latestCompanyQuota,
                 automationResult: automationResult
             )
             self.refreshInFlight = false
+            self.requestCompanyQuotaRefresh()
+            if self.refreshPending {
+                self.refreshPending = false
+                self.requestRefresh()
+            }
+        }
+    }
+
+    private func requestCompanyQuotaRefresh() {
+        guard !companyQuotaRefreshInFlight else { return }
+        companyQuotaRefreshInFlight = true
+        Task { [weak self, companyQuotaScanner] in
+            let quota = await companyQuotaScanner.scanIfNeeded()
+            guard let self else { return }
+            self.companyQuotaRefreshInFlight = false
+            guard self.latestCompanyQuota != quota else { return }
+            self.latestCompanyQuota = quota
+            self.requestRefresh()
         }
     }
 
     private func apply(
-        groups: [ProjectGroup],
+        groups rawGroups: [ProjectGroup],
         shortTermLimit: WeeklyLimitUsage?,
         weeklyLimit: WeeklyLimitUsage?,
         companyQuota: CompanyModelQuota?,
         automationResult: AutomationScanResult
     ) {
+        let threadsByID = Dictionary(uniqueKeysWithValues: rawGroups.flatMap(\.threads).map { ($0.id, $0) })
+        optimisticallyViewedAtByThreadID = optimisticallyViewedAtByThreadID.filter { threadID, viewedAt in
+            guard let thread = threadsByID[threadID] else { return false }
+            return thread.isUnread && thread.updatedAt <= viewedAt
+        }
+        let groups = ViewedThreadPresentationFilter.filtering(
+            rawGroups,
+            viewedAtByThreadID: optimisticallyViewedAtByThreadID
+        )
         touchBarController.update(groups: groups)
         if RefreshPolicy.shouldApply(previous: latestGroups, next: groups) {
             latestGroups = groups
@@ -456,10 +546,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showTransientStatus(category == .processing ? "当前没有处理中的会话" : "当前没有待读会话")
             return
         }
-        openThread(
+        openThreadFromUserSelection(
             thread,
             successMessage: category == .processing ? "已打开处理中的会话" : "已打开待读会话"
         )
+    }
+
+    private func openThreadFromUserSelection(
+        _ thread: ActiveThread,
+        successMessage: String
+    ) {
+        if CodexThreadOpeningPolicy.requiresWorkIslandTransfer(
+            threadID: thread.id,
+            retainedWorkIslandThreadIDs: workIslandThreadIDs()
+        ) {
+            transferThreadToCodex(thread)
+        } else {
+            openThread(thread, successMessage: successMessage)
+        }
     }
 
     private func openThread(
@@ -470,17 +574,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let codex = NSRunningApplication.runningApplications(
             withBundleIdentifier: Self.codexBundleIdentifier
-        ).first {
+           ).first {
+            beginOptimisticThreadView(thread.id)
             codex.activate(options: [.activateIgnoringOtherApps])
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 do {
+                    // Navigate by stable thread ID. A title-only sidebar lookup misses
+                    // newly indexed threads and cannot distinguish duplicate titles.
                     try await CodexAccessibilityController().openThread(
                         threadID: thread.id,
                         title: title
                     )
                     self.finishOpeningThread(thread.id, successMessage: successMessage)
                 } catch {
+                    self.cancelOptimisticThreadView(thread.id)
                     self.showTransientStatus(
                         "会话已保留，Codex 仍在同步；请稍后从工作岛重试",
                         duration: 8
@@ -503,7 +611,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .appendingPathComponent(
                 "Library/Application Support/Codex Hermes Touch Bar/viewed-thread-ids.json"
             )
-        try? ViewedThreadStore.markViewed(threadID: threadID, file: file)
+        let viewedAt = Date()
+        guard (try? ViewedThreadStore.markViewed(threadID: threadID, at: viewedAt, file: file)) != nil else { return }
+        optimisticallyViewedAtByThreadID[threadID] = viewedAt
+        applyOptimisticallyViewedThreads()
+    }
+
+    private func beginOptimisticThreadView(_ threadID: String) {
+        optimisticallyViewedAtByThreadID[threadID] = Date()
+        applyOptimisticallyViewedThreads()
+    }
+
+    private func cancelOptimisticThreadView(_ threadID: String) {
+        optimisticallyViewedAtByThreadID[threadID] = nil
+        requestRefresh()
     }
 
     private func markThreadsViewed(_ threadIDs: [String]) {
@@ -511,8 +632,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .appendingPathComponent(
                 "Library/Application Support/Codex Hermes Touch Bar/viewed-thread-ids.json"
             )
-        try? ViewedThreadStore.markViewed(threadIDs: threadIDs, file: file)
+        let viewedAt = Date()
+        guard (try? ViewedThreadStore.markViewed(threadIDs: threadIDs, at: viewedAt, file: file)) != nil else { return }
+        for threadID in threadIDs { optimisticallyViewedAtByThreadID[threadID] = viewedAt }
+        applyOptimisticallyViewedThreads()
         requestRefresh()
+    }
+
+    private func applyOptimisticallyViewedThreads() {
+        guard let latestGroups else { return }
+        let groups = ViewedThreadPresentationFilter.filtering(
+            latestGroups,
+            viewedAtByThreadID: optimisticallyViewedAtByThreadID
+        )
+        self.latestGroups = groups
+        latestThreadCount = groups.reduce(0) { $0 + $1.threads.filter(\.isActive).count }
+        latestUnreadThreadCount = groups.reduce(0) { $0 + $1.threads.filter(\.isUnread).count }
+        touchBarController.update(groups: groups)
+        desktopPanelController.removeViewedCodexItems(
+            threadIDs: Set(optimisticallyViewedAtByThreadID.keys)
+        )
+        updateStatusText()
     }
 
     private func openWorkItem(_ item: WorkItem) {
@@ -524,7 +664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            let thread = latestGroups?.flatMap(\.threads).first(where: {
                "codex:\($0.id)" == item.id
            }) {
-            openThread(
+            openThreadFromUserSelection(
                 thread,
                 successMessage: "已打开 Codex 会话"
             )
@@ -549,10 +689,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showTransientStatus("该任务当前无法转到 Codex")
             return
         }
-        let released = CodexConversationBridge.releaseWorkIslandOwnership(threadID: thread.id)
-        showTransientStatus(released ? "正在释放工作岛占用…" : "正在转到 Codex…")
-        DispatchQueue.main.asyncAfter(deadline: .now() + (released ? 0.6 : 0.1)) { [weak self] in
-            self?.openThread(thread, successMessage: "已转到 Codex")
+        transferThreadToCodex(thread)
+    }
+
+    private func transferThreadToCodex(_ thread: ActiveThread) {
+        if hasOtherActiveWorkIslandThread(excluding: thread.id) {
+            showTransientStatus("其他工作岛任务仍在运行，结束后自动转到 Codex", duration: 8)
+            waitForWorkIslandTransferReadiness(thread, remainingAttempts: 1_200)
+            return
+        }
+        beginWorkIslandTransfer(thread)
+    }
+
+    private func beginWorkIslandTransfer(_ thread: ActiveThread) {
+        switch CodexConversationBridge.releaseWorkIslandOwnership(threadID: thread.id) {
+        case .ready:
+            showTransientStatus("正在释放工作岛占用…")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.openThread(thread, successMessage: "已转到 Codex")
+            }
+        case .waitingForOtherWorkIslandTasks:
+            showTransientStatus("其他工作岛任务仍在运行，结束后自动转到 Codex", duration: 8)
+            waitForWorkIslandTransferReadiness(thread, remainingAttempts: 1_200)
+        }
+    }
+
+    private func hasOtherActiveWorkIslandThread(excluding threadID: String) -> Bool {
+        let file = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Application Support/Codex Hermes Touch Bar/work-island-thread-ids.json"
+            )
+        let retained = workIslandThreadIDs(file: file)
+        return latestGroups?.lazy.flatMap(\.threads).contains(where: {
+            $0.id != threadID && $0.isActive && retained.contains($0.id)
+        }) == true
+    }
+
+    private func workIslandThreadIDs(file: URL? = nil) -> Set<String> {
+        let resolvedFile = file ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(
+                "Library/Application Support/Codex Hermes Touch Bar/work-island-thread-ids.json"
+            )
+        guard let data = try? Data(contentsOf: resolvedFile),
+              let ids = try? JSONDecoder().decode([String].self, from: data) else {
+            return []
+        }
+        return Set(ids)
+    }
+
+    private func waitForWorkIslandTransferReadiness(
+        _ thread: ActiveThread,
+        remainingAttempts: Int
+    ) {
+        guard remainingAttempts > 0 else {
+            showTransientStatus("其他工作岛任务仍在运行；请稍后重试", duration: 8)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            if CodexConversationBridge.isReadyForDesktopTransfer,
+               !self.hasOtherActiveWorkIslandThread(excluding: thread.id) {
+                self.beginWorkIslandTransfer(thread)
+            } else {
+                self.waitForWorkIslandTransferReadiness(
+                    thread,
+                    remainingAttempts: remainingAttempts - 1
+                )
+            }
         }
     }
 
@@ -859,17 +1062,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestRefresh()
     }
 
-    @objc private func restoreDashboardFromExplicitOpen() {
-        isDesktopPanelVisible = true
-        desktopPanelMenuItem?.state = .on
-        desktopPanelController.show()
-        updateRefreshSchedule()
-        requestRefresh()
-        if isEnabled, touchBarController.isAvailable {
-            _ = touchBarController.restorePresentation()
-        }
-    }
-
     @objc private func toggleEnabled(_ sender: NSMenuItem) {
         isEnabled.toggle()
         sender.state = isEnabled ? .on : .off
@@ -898,7 +1090,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isDesktopPanelVisible.toggle()
         sender.state = isDesktopPanelVisible ? .on : .off
         if isDesktopPanelVisible {
-            desktopPanelController.show()
+            desktopPanelController.showAutoCollapsing()
             requestRefresh()
         } else {
             desktopPanelController.hide()
@@ -910,9 +1102,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isBackgroundPanelMode.toggle()
         sender.state = isBackgroundPanelMode ? .on : .off
         desktopPanelController.setDisplayMode(isBackgroundPanelMode ? .background : .floating)
-        if isDesktopPanelVisible {
-            desktopPanelController.show()
-        }
+    }
+
+    @objc private func selectCleanContentMode() {
+        setDesktopContentMode(.clean)
+    }
+
+    @objc private func selectDetailedContentMode() {
+        setDesktopContentMode(.detailed)
+    }
+
+    private func setDesktopContentMode(_ mode: DesktopContentMode) {
+        desktopContentMode = mode
+        cleanContentModeMenuItem?.state = mode == .clean ? .on : .off
+        detailedContentModeMenuItem?.state = mode == .detailed ? .on : .off
+        desktopPanelController.setContentMode(mode)
     }
 
     @objc private func openAutomationStatusDirectory() {
@@ -930,22 +1134,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func restartApplication() {
         let bundlePath = Bundle.main.bundlePath
-        let relauncher = Process()
-        relauncher.executableURL = URL(fileURLWithPath: "/bin/sh")
-        relauncher.arguments = [
-            "-c",
-            "sleep 0.5; exec /usr/bin/open -n \"$1\"",
-            "codex-touch-bar-relauncher",
-            bundlePath,
-        ]
-
         do {
-            try relauncher.run()
+            try IndependentAppRelauncher.schedule(bundlePath: bundlePath)
             NSApp.terminate(nil)
         } catch {
             showTransientStatus("重启失败：\(error.localizedDescription)", duration: 15)
             NSSound.beep()
         }
+    }
+
+    @objc private func checkForUpdates() {
+        updateController.checkManually()
     }
 
     @objc private func quit() {

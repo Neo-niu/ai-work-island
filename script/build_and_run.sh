@@ -45,8 +45,6 @@ stop_running_app() {
   pkill -x "$PROCESS_NAME" >/dev/null 2>&1 || true
 }
 
-stop_running_app
-
 export CLANG_MODULE_CACHE_PATH="$ROOT_DIR/.build/module-cache"
 export SWIFT_MODULE_CACHE_PATH="$ROOT_DIR/.build/module-cache"
 
@@ -84,8 +82,12 @@ cat >"$INFO_PLIST" <<PLIST
   <string>0.5.17</string>
   <key>CFBundleVersion</key>
   <string>49</string>
+  <key>GitHubReleaseTag</key>
+  <string>v2026.08.13</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
+  <key>LSMultipleInstancesProhibited</key>
+  <true/>
   <key>LSUIElement</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>
@@ -136,33 +138,62 @@ if [[ "$MODE" != "--debug" && "$MODE" != "debug" ]]; then
   /bin/rm -rf "$APP_BUNDLE"
 fi
 
-open_app() {
-  /usr/bin/open "$INSTALLED_APP_BUNDLE"
+schedule_independent_relaunch() {
+  local old_pid="$1"
+  local relaunch_label="dev.kanyun.AIWorkIsland.Relauncher"
+  /bin/launchctl remove "$relaunch_label" >/dev/null 2>&1 || true
+  /bin/launchctl submit -l "$relaunch_label" -- /bin/sh -c '
+    old_pid="$1"
+    bundle_path="$2"
+    for _ in $(/usr/bin/seq 1 100); do
+      if ! /bin/kill -0 "$old_pid" 2>/dev/null; then
+        break
+      fi
+      /bin/sleep 0.1
+    done
+    /bin/sleep 0.3
+    exec /usr/bin/open "$bundle_path"
+  ' ai-work-island-relauncher "$old_pid" "$INSTALLED_APP_BUNDLE"
+}
+
+relaunch_installed_app() {
+  local old_pid
+  old_pid="$(/usr/bin/pgrep -x "$PROCESS_NAME" | /usr/bin/head -1 || true)"
+  if [[ -z "$old_pid" ]]; then
+    /usr/bin/open "$INSTALLED_APP_BUNDLE"
+    return
+  fi
+
+  schedule_independent_relaunch "$old_pid"
+  stop_running_app
 }
 
 case "$MODE" in
   run)
-    open_app
+    relaunch_installed_app
     ;;
   --debug|debug)
+    stop_running_app
     lldb -- "$APP_BINARY"
     ;;
   --logs|logs)
-    open_app
+    relaunch_installed_app
     /usr/bin/log stream --info --style compact --predicate "process == \"$PROCESS_NAME\""
     ;;
   --telemetry|telemetry)
-    open_app
+    relaunch_installed_app
     /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
     ;;
   --verify|verify)
-    open_app
-    for _ in 1 2 3 4 5; do
-      if /usr/bin/pgrep -x "$PROCESS_NAME" >/dev/null; then
+    previous_pid="$(/usr/bin/pgrep -x "$PROCESS_NAME" | /usr/bin/head -1 || true)"
+    relaunch_installed_app
+    for _ in $(/usr/bin/seq 1 30); do
+      current_pid="$(/usr/bin/pgrep -x "$PROCESS_NAME" | /usr/bin/head -1 || true)"
+      if [[ -n "$current_pid" ]] && [[ "$current_pid" != "$previous_pid" ]]; then
         /usr/bin/codesign --verify --deep --strict "$INSTALLED_APP_BUNDLE"
         exit 0
       fi
-      sleep 1
+      sleep 0.5
     done
     echo "$DISPLAY_NAME did not start" >&2
     exit 1

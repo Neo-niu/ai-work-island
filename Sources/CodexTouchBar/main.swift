@@ -4,11 +4,14 @@ import Darwin
 
 @MainActor
 private func runApplication() {
+    guard let instanceLock = AppInstanceLock.acquire() else {
+        return
+    }
     let application = NSApplication.shared
     let delegate = AppDelegate()
     application.delegate = delegate
     application.run()
-    withExtendedLifetime(delegate) {}
+    withExtendedLifetime((delegate, instanceLock)) {}
 }
 
 private func runDiagnostics() {

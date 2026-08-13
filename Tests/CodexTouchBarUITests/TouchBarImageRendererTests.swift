@@ -108,11 +108,20 @@ import Testing
 @MainActor
 @Test func dashboardQuotaRingsUseCompactTouchBarSizing() {
     let quota = QuotaRingView()
+    quota.frame.size = NSSize(width: 112, height: 30)
     quota.update(title: "周", remainingPercent: 58)
     quota.layoutSubtreeIfNeeded()
     #expect(quota.fittingSize.width == 112)
     #expect(quota.fittingSize.height == 30)
     #expect(quota.accessibilityLabel() == "周额度剩余 58%")
+
+    let shapeLayers = quota.layer?.sublayers?.compactMap { $0 as? CAShapeLayer } ?? []
+    #expect(shapeLayers.count == 2)
+    for shapeLayer in shapeLayers {
+        #expect(shapeLayer.affineTransform().isIdentity)
+        #expect(shapeLayer.frame == quota.bounds)
+        #expect(shapeLayer.path?.boundingBoxOfPath == CGRect(x: 7, y: 3, width: 24, height: 24))
+    }
 
     quota.update(
         title: "Codex",
@@ -152,6 +161,48 @@ import Testing
     )
 
     #expect(withConversation.height - withoutConversation.height == 54)
+}
+
+@Test func detailedModeReservesReadableConversationSpace() {
+    let withoutConversation = DesktopPanelLayout.contentSize(
+        visibleItemCount: 1,
+        sectionCount: 1,
+        contentMode: .detailed
+    )
+    let withConversation = DesktopPanelLayout.contentSize(
+        visibleItemCount: 1,
+        sectionCount: 1,
+        conversationItemCount: 1,
+        contentMode: .detailed
+    )
+
+    #expect(DesktopContentMode.clean.title == "清爽模式")
+    #expect(DesktopContentMode.detailed.title == "详细模式")
+    #expect(DesktopContentMode.detailed.conversationStatusLineCount == 4)
+    #expect(withConversation.height - withoutConversation.height == 86)
+}
+
+@Test func contentDensityModesKeepTheirCardMetricsAndBoundedPanelHeight() {
+    #expect(DesktopContentMode.clean.conversationCardHeight == 116)
+    #expect(DesktopContentMode.clean.conversationExtraHeight == 54)
+    #expect(DesktopContentMode.clean.conversationStatusLineCount == 2)
+    #expect(DesktopContentMode.clean.conversationStatusFontSize == 10)
+    #expect(DesktopContentMode.detailed.conversationCardHeight == 148)
+    #expect(DesktopContentMode.detailed.conversationExtraHeight == 86)
+    #expect(DesktopContentMode.detailed.conversationStatusFontSize == 11.5)
+
+    #expect(DesktopPanelLayout.contentSize(
+        visibleItemCount: 7,
+        sectionCount: 4,
+        conversationItemCount: 7,
+        contentMode: .clean
+    ).height == 700)
+    #expect(DesktopPanelLayout.contentSize(
+        visibleItemCount: 7,
+        sectionCount: 4,
+        conversationItemCount: 7,
+        contentMode: .detailed
+    ).height == 720)
 }
 
 @Test func desktopPanelResizePolicyAllowsAUsefulWidthAndHeightRange() {
@@ -202,6 +253,39 @@ import Testing
         silentSince: now.addingTimeInterval(-300),
         now: now
     ))
+}
+
+@Test func voiceMemoWaveformNormalizesWithoutRetainingAudioSamples() {
+    #expect(VoiceMemoWaveformPolicy.normalizedLevel(meanDB: -80, peakDB: -75) == 0)
+    #expect(VoiceMemoWaveformPolicy.normalizedLevel(meanDB: -6, peakDB: -3) == 1)
+    let conversational = VoiceMemoWaveformPolicy.normalizedLevel(meanDB: -28, peakDB: -18)
+    #expect(conversational > 0.5 && conversational < 1)
+}
+
+@MainActor
+@Test func recordingWaveformUsesSevenBoundedBars() {
+    let waveform = RecordingWaveformView(frame: NSRect(x: 0, y: 0, width: 18, height: 18))
+    waveform.layoutSubtreeIfNeeded()
+    waveform.update(level: 0.7, tintColor: .systemRed)
+    let heights = waveform.heightsForTesting()
+
+    #expect(heights.count == 7)
+    #expect(heights.allSatisfy { $0 >= 2 && $0 <= 15 })
+    #expect(Set(heights.map { Int($0.rounded()) }).count > 1)
+}
+
+@MainActor
+@Test func recordingWaveformIsRemovedWhenRecordingEnds() {
+    let view = FloatingStatusButtonView(
+        frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.size)
+    )
+    view.updateRecordingGuardian(
+        VoiceMemoGuardianState(phase: .recording, startedAt: Date(), silentSince: nil)
+    )
+    #expect(view.isRecordingWaveformVisibleForTesting())
+
+    view.updateRecordingGuardian(nil)
+    #expect(!view.isRecordingWaveformVisibleForTesting())
 }
 
 @Test func voiceMemoGuardianOverridesTheFloatingPillWithRecordingState() {
@@ -423,6 +507,34 @@ import Testing
     #expect(pages.map(\.displayText) == ["1 等待你"])
 }
 
+@Test func floatingStatusCarouselKeepsFailuresVisibleWithAccessiblePriorityState() {
+    let failed = WorkItem(
+        id: "failed",
+        source: "自动化",
+        title: "日报发布",
+        status: .failed,
+        updatedAt: Date()
+    )
+    let snapshot = WorkStatusSnapshot(
+        items: [failed],
+        automationIssues: [],
+        codexWeeklyLimit: WeeklyLimitUsage(
+            usedPercent: 15,
+            resetsAt: nil,
+            recordedAt: Date()
+        ),
+        companyQuota: CompanyModelQuota(totalUSD: 20, usedUSD: 18, resetsAt: nil)
+    )
+
+    let pages = DesktopFloatingButtonPresentation.carousel(for: snapshot)
+
+    #expect(pages.count == 1)
+    #expect(pages[0].displayText == "1 需处理")
+    #expect(pages[0].tintColor == .systemRed)
+    #expect(!pages[0].pulses)
+    #expect(pages[0].accessibilityLabel == "恢复 AI 工作岛；当前1 需处理")
+}
+
 @MainActor
 @Test func floatingStatusButtonAdvancesAndWrapsTheQuotaCarousel() {
     let view = FloatingStatusButtonView(
@@ -476,9 +588,66 @@ import Testing
 
 @Test func hoverExpandedPanelCollapsesOnlyAfterThePointerLeaves() {
     #expect(DesktopFloatingHoverBehavior.collapseDelay == 0.5)
+    #expect(DesktopFloatingHoverBehavior.hoverReconciliationInterval == 0.1)
     #expect(!DesktopFloatingHoverBehavior.shouldAutoCollapse(isHoverExpanded: false, isPanelHovered: false))
     #expect(!DesktopFloatingHoverBehavior.shouldAutoCollapse(isHoverExpanded: true, isPanelHovered: true))
     #expect(DesktopFloatingHoverBehavior.shouldAutoCollapse(isHoverExpanded: true, isPanelHovered: false))
+    #expect(DesktopFloatingHoverBehavior.shouldScheduleAutoCollapse(
+        isHoverExpanded: true,
+        isPanelHovered: false,
+        hasPendingAutoCollapse: false
+    ))
+    #expect(!DesktopFloatingHoverBehavior.shouldScheduleAutoCollapse(
+        isHoverExpanded: true,
+        isPanelHovered: false,
+        hasPendingAutoCollapse: true
+    ))
+    #expect(DesktopFloatingHoverBehavior.isCurrentAutoCollapseRequest(
+        firedRequestID: 8,
+        currentRequestID: 8
+    ))
+    #expect(!DesktopFloatingHoverBehavior.isCurrentAutoCollapseRequest(
+        firedRequestID: 8,
+        currentRequestID: 9
+    ))
+}
+
+@Test func completionReminderRevealsOnlyNewlyFinishedWorkForFourSeconds() {
+    let now = Date(timeIntervalSince1970: 100)
+    let running = WorkItem(
+        id: "codex:1",
+        source: "Codex",
+        title: "分析任务",
+        status: .running,
+        updatedAt: now
+    )
+    let waiting = WorkItem(
+        id: "codex:1",
+        source: "Codex",
+        title: "分析任务",
+        status: .waiting,
+        updatedAt: now.addingTimeInterval(1)
+    )
+    let previous = WorkStatusSnapshot(items: [running], automationIssues: [], refreshedAt: now)
+    let current = WorkStatusSnapshot(items: [waiting], automationIssues: [], refreshedAt: now)
+
+    #expect(DesktopCompletionReminderBehavior.revealDuration == 4)
+    #expect(DesktopCompletionReminderBehavior.newlyCompletedItemIDs(
+        previous: previous,
+        current: current
+    ) == ["codex:1"])
+    #expect(DesktopCompletionReminderBehavior.newlyCompletedItemIDs(
+        previous: nil,
+        current: current
+    ).isEmpty)
+    #expect(DesktopCompletionReminderBehavior.newlyCompletedItemIDs(
+        previous: current,
+        current: current
+    ).isEmpty)
+    #expect(DesktopCompletionReminderBehavior.autoCollapseDelay(
+        standardDelay: 0.5,
+        completionRevealRemaining: 3.8
+    ) == 3.8)
 }
 
 @MainActor
@@ -493,6 +662,30 @@ import Testing
     #expect(DesktopFloatingHoverBehavior.shouldAutoCollapse(
         isHoverExpanded: expansionAllowsAutoCollapse,
         isPanelHovered: false
+    ))
+}
+
+@MainActor
+@Test func explicitlyShowingThePanelReturnsToTheAutoCollapseLifecycle() {
+    let controller = DesktopStatusPanelController()
+    controller.showAutoCollapsing()
+
+    #expect(controller.isWaitingForPointerLeaveToCollapse)
+    controller.hide()
+}
+
+@Test func visibleCapsuleRepairsAStaleExpandedWindowState() {
+    #expect(DesktopFloatingPanelTransition.shouldActivate(
+        isMinimizedToFloatingButton: false,
+        isFloatingPanelVisible: true
+    ))
+    #expect(DesktopFloatingPanelTransition.shouldActivate(
+        isMinimizedToFloatingButton: false,
+        isFloatingPanelVisible: true
+    ))
+    #expect(!DesktopFloatingPanelTransition.shouldActivate(
+        isMinimizedToFloatingButton: false,
+        isFloatingPanelVisible: false
     ))
 }
 
@@ -627,4 +820,21 @@ import Testing
     #expect(!WorkSection.active.isAlwaysExpanded)
     #expect(!WorkSection.queued.isAlwaysExpanded)
     #expect(!WorkSection.recent.isAlwaysExpanded)
+}
+
+@Test func activeSectionIsTheDefaultCollapsibleSection() {
+    #expect(WorkSection.defaultExpandedSection(from: [.needsUser, .active, .recent]) == .active)
+    #expect(WorkSection.defaultExpandedSection(from: [.needsUser, .queued, .recent]) == .queued)
+    #expect(WorkSection.defaultExpandedSection(from: [.needsUser]) == nil)
+}
+
+@MainActor
+@Test func panelControlsActOnTheClickThatActivatesTheWindow() {
+    #expect(FirstMouseButton().acceptsFirstMouse(for: nil))
+    #expect(PastedImageTextField().acceptsFirstMouse(for: nil))
+}
+
+@Test func emptyWaitingCardArrowOpensTheThread() {
+    #expect(CodexCardPrimaryActionPolicy.opensThreadWhenPromptIsEmpty(status: .waiting))
+    #expect(!CodexCardPrimaryActionPolicy.opensThreadWhenPromptIsEmpty(status: .running))
 }

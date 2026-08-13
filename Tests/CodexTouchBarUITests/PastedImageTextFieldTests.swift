@@ -10,6 +10,39 @@ import Testing
     #expect(params["approvalPolicy"] as? String == "never")
     #expect(params["sandbox"] as? String == "danger-full-access")
     #expect(params["ephemeral"] as? Bool == false)
+
+    let turnParams = CodexConversationBridge.turnStartParams(
+        threadID: "thread-test",
+        prompt: CodexPrompt(text: "测试", imageURLs: [])
+    )
+    #expect(turnParams["approvalPolicy"] as? String == "never")
+    let sandboxPolicy = turnParams["sandboxPolicy"] as? [String: Any]
+    #expect(sandboxPolicy?["type"] as? String == "dangerFullAccess")
+}
+
+@Test func workIslandReleasesCompletedOrTransferredThreadsWithUnsubscribe() {
+    let request = CodexConversationBridge.threadUnsubscribeRequest(
+        threadID: "019ffaca-d250-7b61-ba0c-56744b36a354"
+    )
+
+    #expect(request["method"] as? String == "thread/unsubscribe")
+    #expect((request["id"] as? Int) == 4)
+    let params = request["params"] as? [String: String]
+    #expect(params?["threadId"] == "019ffaca-d250-7b61-ba0c-56744b36a354")
+}
+
+@Test func everyUserOpenEntryRoutesRetainedThreadsThroughWorkIslandTransfer() {
+    let retainedThreadID = "019ffaca-d250-7b61-ba0c-56744b36a354"
+    let retained = Set([retainedThreadID])
+
+    #expect(CodexThreadOpeningPolicy.requiresWorkIslandTransfer(
+        threadID: retainedThreadID,
+        retainedWorkIslandThreadIDs: retained
+    ))
+    #expect(!CodexThreadOpeningPolicy.requiresWorkIslandTransfer(
+        threadID: "019ffb2e-bb82-7d51-a642-fc031f582e78",
+        retainedWorkIslandThreadIDs: retained
+    ))
 }
 
 @MainActor

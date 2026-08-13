@@ -434,6 +434,72 @@ import Testing
     #expect(await scanner.scan().map(\.id) == [threadID])
 }
 
+@Test func openingAnIndexedThreadDoesNotReviveUnreadFromDatabaseRecency() async throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+    let threadID = "indexed-opened-thread"
+    let rolloutFile = root.appendingPathComponent("completed.jsonl")
+    try rollout(
+        id: threadID,
+        cwd: root.path,
+        events: ["task_started", "task_complete"],
+        at: rolloutFile
+    )
+    let resultTime = Date().addingTimeInterval(-10)
+    try FileManager.default.setAttributes(
+        [.modificationDate: resultTime],
+        ofItemAtPath: rolloutFile.path
+    )
+
+    let globalStateFile = root.appendingPathComponent("global-state.json")
+    try "{\"electron-persisted-atom-state\":{\"unread-thread-ids-by-host-v1\":{\"local\":[\"\(threadID)\"]}}}"
+        .write(to: globalStateFile, atomically: true, encoding: .utf8)
+    let viewedThreadFile = root.appendingPathComponent("viewed.json")
+    let viewedAt = Date().addingTimeInterval(-5)
+    try ViewedThreadStore.markViewed(threadID: threadID, at: viewedAt, file: viewedThreadFile)
+
+    let databaseURL = root.appendingPathComponent("state.sqlite")
+    var database: OpaquePointer?
+    #expect(sqlite3_open(databaseURL.path, &database) == SQLITE_OK)
+    guard let database else { return }
+    defer { sqlite3_close(database) }
+    let openedAt = Int64(Date().timeIntervalSince1970)
+    let sql = """
+    CREATE TABLE threads (
+      id TEXT PRIMARY KEY, title TEXT NOT NULL, cwd TEXT NOT NULL,
+      rollout_path TEXT NOT NULL, updated_at INTEGER NOT NULL,
+      recency_at_ms INTEGER NOT NULL, archived INTEGER NOT NULL
+    );
+    CREATE TABLE thread_spawn_edges (
+      parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL
+    );
+    INSERT INTO threads VALUES (
+      '\(threadID)', 'Opened thread', '\(root.path)', '\(rolloutFile.path)',
+      \(openedAt), \(openedAt * 1_000), 0
+    );
+    """
+    #expect(sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK)
+
+    let scanner = RolloutScanner(
+        sessionsRoot: root,
+        stateDatabase: databaseURL,
+        globalStateFile: globalStateFile,
+        retainedThreadFile: nil,
+        viewedThreadFile: viewedThreadFile,
+        recentFileInterval: 60
+    )
+    #expect(await scanner.scan().isEmpty)
+
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date().addingTimeInterval(1)],
+        ofItemAtPath: rolloutFile.path
+    )
+    #expect(await scanner.scan().map(\.id) == [threadID])
+}
+
 @Test func reloadsUnreadIDsWhenGlobalStateContentsChangeWithoutMetadataChange() async throws {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)

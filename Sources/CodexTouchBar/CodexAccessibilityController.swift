@@ -194,11 +194,11 @@ final class CodexAccessibilityController {
         let root = AXUIElementCreateApplication(application.processIdentifier)
         _ = enableEnhancedAccessibility(for: root)
         let target = normalized(String(query.prefix(120)))
-        // Prefer a row that Codex has already rendered. New Work Island
-        // threads often exist in the persistent index before their folder is
-        // loaded in the sidebar, so waiting on the sidebar alone can never
-        // make the first click succeed.
-        for _ in 0..<10 {
+        // A Work Island thread can reach the persistent index several seconds
+        // before Codex renders its sidebar row.  Do not fall back to a deep
+        // link here: that path can open a conversation but still fail the
+        // post-open accessibility check, which incorrectly restores “等待你”.
+        for _ in 0..<80 {
             let match = bestThreadMatch(target: target, in: accessibilityElements(in: root, sidebarOnly: true))
             if let match {
                 guard AXUIElementPerformAction(match, kAXPressAction as CFString) == .success else {
@@ -233,11 +233,12 @@ final class CodexAccessibilityController {
             throw ControllerError.actionFailed
         }
 
-        // Current Codex builds route this stable ID to the main conversation.
-        // Wait for the target content and reject the old hidden-overlay error
-        // before the Work Island marks the result as viewed.
+        // Current Codex builds route this stable ID to the most recently focused
+        // main window. Keep the accessibility check as an opportunistic error
+        // detector, not as the success condition: recent ChatGPT/Codex builds can
+        // navigate correctly while exposing only the native window chrome to AX.
         let target = normalized(String(title.prefix(120)))
-        for _ in 0..<30 {
+        for _ in 0..<20 {
             let elements = accessibilityElements(in: root)
             if elements.contains(where: {
                 $0.text.contains("conversation state not found") ||
@@ -254,7 +255,9 @@ final class CodexAccessibilityController {
             }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
-        throw ControllerError.threadNotVisible
+        // NSWorkspace accepted the stable-ID route and Codex exposed no contrary
+        // evidence. Treat the dispatch as successful; title-only sidebar lookup
+        // cannot distinguish duplicate titles and misses newly indexed threads.
     }
 
     private func focusedRole(in root: AXUIElement) -> String? {

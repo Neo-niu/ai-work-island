@@ -1,5 +1,7 @@
+import AppKit
 import CodexTouchBarCore
 import Foundation
+import ScriptingBridge
 
 actor CompanyQuotaScanner {
     private var cachedQuota: CompanyModelQuota?
@@ -19,45 +21,33 @@ actor CompanyQuotaScanner {
 
     private func readThroughEdge() async -> CompanyModelQuota? {
         await Task.detached(priority: .utility) {
-            let source = """
-            with timeout of 8 seconds
-                tell application "Microsoft Edge"
-                    repeat with browserWindow in windows
-                        repeat with browserTab in tabs of browserWindow
-                            if URL of browserTab starts with "https://model.zhenguanyu.com/" then
-                                reload browserTab
-                                delay 0.8
-                                set responseText to execute browserTab javascript "(()=>{const x=new XMLHttpRequest();x.open('GET','/api/v1/users/self',false);x.send();return x.responseText})()"
-                                return responseText
-                            end if
-                        end repeat
-                    end repeat
-                end tell
-            end timeout
-            return ""
-            """
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            process.arguments = ["-e", source]
-            let output = Pipe()
-            process.standardOutput = output
-            process.standardError = Pipe()
-            do {
-                try process.run()
-                for _ in 0..<100 where process.isRunning {
-                    try? await Task.sleep(for: .milliseconds(100))
+            let edgeApplications = NSRunningApplication.runningApplications(
+                withBundleIdentifier: "com.microsoft.edgemac"
+            ).filter { $0.activationPolicy == .regular && !$0.isTerminated }
+            for edgeApplication in edgeApplications {
+                guard let application = SBApplication(
+                    processIdentifier: edgeApplication.processIdentifier
+                ),
+                let windows = (application as NSObject).value(forKey: "windows") as? SBElementArray else {
+                    continue
                 }
-                if process.isRunning {
-                    process.terminate()
-                    process.waitUntilExit()
-                    return nil
+                for case let window as NSObject in windows {
+                    guard let tabs = window.value(forKey: "tabs") as? SBElementArray else { continue }
+                    for case let tab as NSObject in tabs {
+                        let url = tab.value(forKey: "URL") as? String
+                        guard url?.hasPrefix("https://model.zhenguanyu.com/") == true else { continue }
+                        let javascript = """
+                        (()=>{const x=new XMLHttpRequest();x.open('GET','/api/v1/users/self',false);x.send();return x.responseText})()
+                        """
+                        guard let response = tab.perform(
+                            NSSelectorFromString("executeJavascript:"),
+                            with: javascript
+                        )?.takeUnretainedValue() as? String else { continue }
+                        return CompanyModelQuota.parsePlatformResponse(Data(response.utf8))
+                    }
                 }
-                guard process.terminationStatus == 0 else { return nil }
-                let data = output.fileHandleForReading.readDataToEndOfFile()
-                return CompanyModelQuota.parsePlatformResponse(data)
-            } catch {
-                return nil
             }
+            return nil
         }.value
     }
 }

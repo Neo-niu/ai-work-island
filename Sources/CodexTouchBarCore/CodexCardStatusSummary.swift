@@ -13,6 +13,12 @@ public struct CodexCardStatusSummary: Equatable, Sendable {
         [primary, secondary].compactMap { $0 }.joined(separator: "\n")
     }
 
+    public var detailedText: String {
+        [primary.replacingOccurrences(of: " · 当前：", with: "\n当前："), secondary]
+            .compactMap { $0 }
+            .joined(separator: "\n")
+    }
+
     public static func running(
         phase: String?,
         completedSteps: Int?,

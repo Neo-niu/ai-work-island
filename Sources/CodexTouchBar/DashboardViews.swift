@@ -177,15 +177,18 @@ final class QuotaRingView: NSVisualEffectView {
     override func layout() {
         super.layout()
         let ringRect = CGRect(x: 7, y: 3, width: 24, height: 24)
-        let ringPath = CGPath(
-            ellipseIn: ringRect,
-            transform: nil
+        let ringPath = CGMutablePath()
+        ringPath.addArc(
+            center: CGPoint(x: ringRect.midX, y: ringRect.midY),
+            radius: ringRect.width / 2,
+            startAngle: -.pi / 2,
+            endAngle: .pi * 3 / 2,
+            clockwise: false
         )
         for shapeLayer in [trackLayer, ringLayer] {
             shapeLayer.frame = bounds
             shapeLayer.path = ringPath
-            shapeLayer.setAffineTransform(CGAffineTransform(rotationAngle: -.pi / 2))
-            shapeLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+            shapeLayer.setAffineTransform(.identity)
         }
     }
 

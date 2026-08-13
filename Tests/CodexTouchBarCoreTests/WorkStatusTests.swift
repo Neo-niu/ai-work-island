@@ -39,6 +39,17 @@ import Testing
     #expect(!summary.text.contains("正在：正在"))
 }
 
+@Test func detailedCodexCardStatusSeparatesProgressFromCurrentAction() {
+    let summary = CodexCardStatusSummary.running(
+        phase: "验证安装包",
+        completedSteps: 3,
+        totalSteps: 5,
+        recentActivity: "测试已通过"
+    )
+
+    #expect(summary.detailedText == "进度 3/5\n当前：验证安装包\n最新：测试已通过")
+}
+
 @Test func codexCardStatusDropsDuplicateRecentActivity() {
     let summary = CodexCardStatusSummary.running(
         phase: "运行测试",

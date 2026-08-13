@@ -43,10 +43,22 @@ enum VoiceMemoSilencePolicy {
     }
 }
 
+enum VoiceMemoWaveformPolicy {
+    static let minimumDB = -60.0
+    static let maximumDB = -6.0
+
+    static func normalizedLevel(meanDB: Double, peakDB: Double) -> Double {
+        let responsiveDB = max(meanDB + 8, peakDB)
+        let normalized = (responsiveDB - minimumDB) / (maximumDB - minimumDB)
+        return min(max(normalized, 0), 1)
+    }
+}
+
 @MainActor
 final class VoiceMemoGuardian {
     var onStateChanged: ((VoiceMemoGuardianState?) -> Void)?
     var onSilenceReminder: ((VoiceMemoGuardianState) -> Void)?
+    var onWaveformLevelChanged: ((Double) -> Void)?
 
     private static let voiceMemosBundleIdentifier = "com.apple.VoiceMemos"
     private static let logger = Logger(
@@ -58,6 +70,14 @@ final class VoiceMemoGuardian {
     private var recordingStartedAt: Date?
     private var lastReminderAt: Date?
     private var lastState: VoiceMemoGuardianState?
+
+    init() {
+        audioMeter.setLevelHandler { [weak self] level in
+            DispatchQueue.main.async { [weak self] in
+                self?.onWaveformLevelChanged?(level)
+            }
+        }
+    }
 
     func start() {
         guard timer == nil else { return }
@@ -119,6 +139,7 @@ final class VoiceMemoGuardian {
         recordingStartedAt = nil
         lastReminderAt = nil
         audioMeter.stop()
+        onWaveformLevelChanged?(0)
         guard lastState != nil else { return }
         Self.logger.info("Voice Memos recording ended")
         lastState = nil
@@ -200,6 +221,10 @@ private final class VoiceMemoAudioMeter: @unchecked Sendable {
     var silentSince: Date? { accumulator.silentSince }
     private var isRunning = false
     private var permissionRequestInFlight = false
+
+    func setLevelHandler(_ handler: @escaping @Sendable (Double) -> Void) {
+        accumulator.setLevelHandler(handler)
+    }
 
     func startIfNeeded() {
         guard !isRunning, !permissionRequestInFlight else { return }
@@ -285,6 +310,7 @@ private final class VoiceMemoAudioMeter: @unchecked Sendable {
 private final class VoiceMemoLevelAccumulator: @unchecked Sendable {
     private let lock = NSLock()
     private var storedSilentSince: Date?
+    private var levelHandler: (@Sendable (Double) -> Void)?
 
     var silentSince: Date? {
         lock.lock()
@@ -294,12 +320,20 @@ private final class VoiceMemoLevelAccumulator: @unchecked Sendable {
 
     func accept(meanDB: Double, peakDB: Double, now: Date) {
         lock.lock()
-        defer { lock.unlock() }
         if VoiceMemoSilencePolicy.isSilent(meanDB: meanDB, peakDB: peakDB) {
             storedSilentSince = storedSilentSince ?? now
         } else {
             storedSilentSince = nil
         }
+        let handler = levelHandler
+        lock.unlock()
+        handler?(VoiceMemoWaveformPolicy.normalizedLevel(meanDB: meanDB, peakDB: peakDB))
+    }
+
+    func setLevelHandler(_ handler: @escaping @Sendable (Double) -> Void) {
+        lock.lock()
+        levelHandler = handler
+        lock.unlock()
     }
 
     func beginSilence(at date: Date) {

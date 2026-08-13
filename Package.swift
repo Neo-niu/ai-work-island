@@ -41,6 +41,7 @@ let package = Package(
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("ServiceManagement"),
+                .linkedFramework("ScriptingBridge"),
                 .linkedFramework("UserNotifications"),
             ]
         ),

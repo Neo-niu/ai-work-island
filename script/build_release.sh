@@ -10,6 +10,7 @@ DEFAULT_NOTARY_PROFILE="desktop-updater-notary"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${1:-0.5.17}"
 VERSION="${VERSION#v}"
+RELEASE_TAG="${GITHUB_RELEASE_TAG:-v$VERSION}"
 SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-$DEFAULT_SIGN_IDENTITY}"
 NOTARY_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-$DEFAULT_NOTARY_PROFILE}"
 RELEASE_DIR="$ROOT_DIR/dist/release"
@@ -45,6 +46,7 @@ cp "$ROOT_DIR/Resources/AppIcon.icns" "$APP_RESOURCES/AppIcon.icns"
 chmod +x "$APP_BINARY"
 cp "$ROOT_DIR/Resources/Info.plist" "$INFO_PLIST"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$INFO_PLIST"
+plutil -replace GitHubReleaseTag -string "$RELEASE_TAG" "$INFO_PLIST"
 plutil -lint "$INFO_PLIST" >/dev/null
 
 codesign \
