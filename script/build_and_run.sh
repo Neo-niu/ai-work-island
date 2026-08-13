@@ -152,7 +152,11 @@ schedule_independent_relaunch() {
       /bin/sleep 0.1
     done
     /bin/sleep 0.3
-    exec /usr/bin/open "$bundle_path"
+    /usr/bin/open "$bundle_path"
+    # `launchctl submit` jobs are restarted after a short-lived successful exit.
+    # Remove this one-shot job after the app has been opened so it cannot keep
+    # stealing focus every ten seconds.
+    /bin/launchctl remove dev.kanyun.AIWorkIsland.Relauncher >/dev/null 2>&1 || true
   ' ai-work-island-relauncher "$old_pid" "$INSTALLED_APP_BUNDLE"
 }
 

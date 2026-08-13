@@ -20,6 +20,9 @@ import Testing
     )
 
     #expect(arguments.prefix(3) == ["submit", "-l", IndependentAppRelauncher.launchLabel])
+    #expect(arguments.contains(where: {
+        $0.contains("launchctl remove \(IndependentAppRelauncher.launchLabel)")
+    }))
     #expect(arguments.contains("/bin/sh"))
     #expect(arguments.contains("4321"))
     #expect(arguments.contains("/Applications/AI 工作岛.app"))

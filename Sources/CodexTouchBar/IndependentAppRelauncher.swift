@@ -20,7 +20,10 @@ enum IndependentAppRelauncher {
               /bin/sleep 0.1
             done
             /bin/sleep 0.3
-            exec /usr/bin/open "$bundle_path"
+            /usr/bin/open "$bundle_path"
+            # A submitted launchd job is not one-shot by default. Remove it
+            # after reopening the app or launchd will run it again repeatedly.
+            /bin/launchctl remove \(launchLabel) >/dev/null 2>&1 || true
             """,
             "ai-work-island-relauncher",
             String(currentPID),

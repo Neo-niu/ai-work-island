@@ -58,6 +58,7 @@
 
 ## 最近回归
 
+- 2026-08-13：修复安装或菜单重启后前台窗口每 10 秒被工作岛/ChatGPT 抢走。根因是 `launchctl submit` 创建的临时重启任务退出后会被 launchd 节流重启，持续执行 `open`；重启器现打开安装版后主动注销自身，构建脚本与应用内重启共用该一次性规则。已清除本机遗留的 `dev.kanyun.AIWorkIsland.Relauncher` 服务；151 项 Swift 测试通过。
 - 2026-08-13：修复没有任务完成时工作岛仍会快速展开再缩回。根因是任意第二次 LaunchServices 启动都会发送 `restoreDashboard` 分布式通知，常驻实例收到后调用 `showAutoCollapsing()`；同时旧单实例策略用 PID 数字大小判断新旧，PID 回绕后会保留重复实例。现移除“重复启动即展开”链路，显式拒绝 AppKit 的后台 reopen 窗口恢复；胶囊悬浮/点击、菜单操作和真实任务完成提醒维持原行为。新增内核持有的 `app-instance.lock`，并声明 `LSMultipleInstancesProhibited`，不再依赖 PID 顺序。151 项 Swift 测试、`git diff --check`、构建安装、严格签名、自动化诊断通过；安装版连续执行 3 次 `open -n` 后全程保持 120×50pt 胶囊，进程数始终为 1。
 
 - 2026-08-13：修复同一会话从不同入口打开时绕过占用释放。此前只有任务卡悬停按钮“转到 Codex”走工作岛释放状态机，点击整张 Codex 卡片和 Touch Bar 的处理中/待读仍直接发送深链；当共享 App Server 还在执行另一条工作岛任务时，会同时触发“未找到对话”和“此任务正在其他位置运行”。现所有用户打开入口先按本地工作岛 thread 注册表统一判定：工作岛会话全部走同一转移/等待链路，普通 Codex 会话才直接打开。完整 152 项 Swift 测试、安装构建、严格签名、单进程、自动化诊断和 `git diff --check` 通过；安装版二进制回读包含统一入口方法。真实并发任务自然完成后，共享 App Server launchd job 与 PID 均自动消失。Computer Use 可回读安装版胶囊，但受 0.5 秒自动回缩和 Codex 应用安全限制影响，未自动重放“并发中点击任务卡”的完整 UI 场景。
