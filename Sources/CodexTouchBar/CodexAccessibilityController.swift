@@ -194,36 +194,12 @@ final class CodexAccessibilityController {
         let root = AXUIElementCreateApplication(application.processIdentifier)
         _ = enableEnhancedAccessibility(for: root)
         let target = normalized(String(query.prefix(120)))
-        // A newly created persistent thread can take several seconds to enter
-        // Codex's visible sidebar. Wait for the real row instead of falling
-        // back to a deep link that is broadcast to hidden Codex windows.
-        for _ in 0..<80 {
-            let match = accessibilityElements(in: root, sidebarOnly: true)
-                .compactMap { snapshot -> (AXUIElement, Int, Int)? in
-                    guard snapshot.canPress,
-                          snapshot.role == (kAXButtonRole as String),
-                          let frame = rectAttribute("AXFrame", of: snapshot.element),
-                          frame.minX < 320 else {
-                        return nil
-                    }
-                    let candidate = normalized(snapshot.rawText)
-                    let score: Int
-                    if candidate == target {
-                        score = 100
-                    } else if candidate.hasPrefix("\(target) ") {
-                        score = 90
-                    } else if candidate.contains(target), target.count >= 6 {
-                        score = 70
-                    } else {
-                        return nil
-                    }
-                    return (snapshot.element, score, candidate.count)
-                }
-                .max {
-                    if $0.1 != $1.1 { return $0.1 < $1.1 }
-                    return $0.2 > $1.2
-                }?
-                .0
+        // Prefer a row that Codex has already rendered. New Work Island
+        // threads often exist in the persistent index before their folder is
+        // loaded in the sidebar, so waiting on the sidebar alone can never
+        // make the first click succeed.
+        for _ in 0..<10 {
+            let match = bestThreadMatch(target: target, in: accessibilityElements(in: root, sidebarOnly: true))
             if let match {
                 guard AXUIElementPerformAction(match, kAXPressAction as CFString) == .success else {
                     throw ControllerError.actionFailed
@@ -233,6 +209,99 @@ final class CodexAccessibilityController {
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         throw ControllerError.threadNotVisible
+    }
+
+    func openThread(threadID: String, title: String) async throws {
+        guard UUID(uuidString: threadID) != nil,
+              let url = URL(string: "codex://threads/\(threadID)") else {
+            throw ControllerError.actionFailed
+        }
+        guard let application = NSRunningApplication.runningApplications(
+            withBundleIdentifier: Self.codexBundleIdentifier
+        ).first else {
+            throw ControllerError.codexNotRunning
+        }
+        application.activate(options: [.activateIgnoringOtherApps])
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let root = AXUIElementCreateApplication(application.processIdentifier)
+        _ = enableEnhancedAccessibility(for: root)
+        if focusedRole(in: root) == (kAXComboBoxRole as String) {
+            try dismissCommandPalette()
+            try await Task.sleep(nanoseconds: 150_000_000)
+        }
+        guard NSWorkspace.shared.open(url) else {
+            throw ControllerError.actionFailed
+        }
+
+        // Current Codex builds route this stable ID to the main conversation.
+        // Wait for the target content and reject the old hidden-overlay error
+        // before the Work Island marks the result as viewed.
+        let target = normalized(String(title.prefix(120)))
+        for _ in 0..<30 {
+            let elements = accessibilityElements(in: root)
+            if elements.contains(where: {
+                $0.text.contains("conversation state not found") ||
+                $0.text.contains("未找到对话")
+            }) {
+                throw ControllerError.threadNotVisible
+            }
+            if elements.contains(where: { snapshot in
+                guard let frame = rectAttribute("AXFrame", of: snapshot.element),
+                      frame.minX >= 220 else { return false }
+                return snapshot.text.contains(target)
+            }) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        throw ControllerError.threadNotVisible
+    }
+
+    private func focusedRole(in root: AXUIElement) -> String? {
+        guard let focused = attribute(kAXFocusedUIElementAttribute, of: root),
+              CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        return stringAttribute(
+            kAXRoleAttribute,
+            of: unsafeDowncast(focused, to: AXUIElement.self)
+        )
+    }
+
+    private func dismissCommandPalette() throws {
+        guard let source = CGEventSource(stateID: .hidSystemState),
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 53, keyDown: false) else {
+            throw ControllerError.actionFailed
+        }
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+    }
+
+    private func bestThreadMatch(target: String, in elements: [ElementSnapshot]) -> AXUIElement? {
+        elements.compactMap { snapshot -> (AXUIElement, Int, Int)? in
+            guard snapshot.canPress,
+                  snapshot.role == (kAXButtonRole as String) else {
+                return nil
+            }
+            let candidate = normalized(snapshot.rawText)
+            let score: Int
+            if candidate == target {
+                score = 100
+            } else if candidate.hasPrefix("\(target) ") {
+                score = 90
+            } else if candidate.contains(target), target.count >= 6 {
+                score = 70
+            } else {
+                return nil
+            }
+            return (snapshot.element, score, candidate.count)
+        }
+        .max {
+            if $0.1 != $1.1 { return $0.1 < $1.1 }
+            return $0.2 > $1.2
+        }?
+        .0
     }
 
     private func prepareCommandBridge() throws {

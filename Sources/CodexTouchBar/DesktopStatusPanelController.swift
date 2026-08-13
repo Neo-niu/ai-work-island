@@ -2109,6 +2109,13 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
         status.alignment = .right
         status.setContentCompressionResistancePriority(.required, for: .horizontal)
 
+        // The card is visually one click target, but AppKit label/stack views
+        // consume mouse events instead of bubbling them to WorkItemRowView.
+        // Route every non-interactive part through the same selection action.
+        [indicator, textStack, status].forEach {
+            $0.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(selectRow)))
+        }
+
         outputButton.image = NSImage(systemSymbolName: "doc", accessibilityDescription: "打开产出")
         outputButton.isBordered = false
         outputButton.toolTip = "打开产出"
@@ -2176,6 +2183,9 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
             conversationStatusLabel.setContentCompressionResistancePriority(
                 .defaultLow,
                 for: .horizontal
+            )
+            conversationStatusLabel.addGestureRecognizer(
+                NSClickGestureRecognizer(target: self, action: #selector(selectRow))
             )
 
             promptField.placeholderString = "继续该项目…"
@@ -2306,7 +2316,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
 
     override func mouseEntered(with event: NSEvent) { setHovering(true) }
     override func mouseExited(with event: NSEvent) { setHovering(false) }
-    override func mouseUp(with event: NSEvent) { onSelected?() }
+    override func mouseUp(with event: NSEvent) { selectRow() }
 
     func playSuccessSweep(color: NSColor) {
         guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
@@ -2384,6 +2394,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
     }
 
     @objc private func openOutput() { onOutputSelected?() }
+    @objc private func selectRow() { onSelected?() }
     @objc private func transferToCodex() { onCodexTransferSelected?() }
     @objc private func acknowledge() { onAcknowledgeSelected?() }
     @objc private func showDetails() { onDetailsSelected?() }

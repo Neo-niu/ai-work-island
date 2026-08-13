@@ -155,6 +155,38 @@ private func runAccessibilityTreeDiagnostic(processIdentifier: pid_t? = nil) {
     }
 }
 
+@MainActor
+private func runOpenThreadDiagnostic(title: String) {
+    Task {
+        do {
+            try await CodexAccessibilityController().openVisibleThread(title: title)
+            print("Open thread\tsuccess\t\(title)")
+            exit(EXIT_SUCCESS)
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            print("Open thread\tfailed\t\(message)")
+            exit(EXIT_FAILURE)
+        }
+    }
+    dispatchMain()
+}
+
+@MainActor
+private func runOpenThreadIDDiagnostic(threadID: String, title: String) {
+    Task {
+        do {
+            try await CodexAccessibilityController().openThread(threadID: threadID, title: title)
+            print("Open thread ID\tsuccess\t\(threadID)\t\(title)")
+            exit(EXIT_SUCCESS)
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            print("Open thread ID\tfailed\t\(message)")
+            exit(EXIT_FAILURE)
+        }
+    }
+    dispatchMain()
+}
+
 switch LaunchCommand(arguments: CommandLine.arguments) {
 case .diagnoseRollouts:
     runDiagnostics()
@@ -170,6 +202,10 @@ case .diagnoseAccessibilityTree:
     runAccessibilityTreeDiagnostic()
 case let .diagnoseAccessibilityPID(processIdentifier):
     runAccessibilityTreeDiagnostic(processIdentifier: processIdentifier)
+case let .diagnoseOpenThread(title):
+    runOpenThreadDiagnostic(title: title)
+case let .diagnoseOpenThreadID(threadID, title):
+    runOpenThreadIDDiagnostic(threadID: threadID, title: title)
 case .diagnoseLoginItem:
     print(LaunchAtLoginController.statusDescription)
 case .run:

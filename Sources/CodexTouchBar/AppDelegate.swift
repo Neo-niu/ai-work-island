@@ -475,7 +475,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 do {
-                    try await CodexAccessibilityController().openVisibleThread(title: title)
+                    try await CodexAccessibilityController().openThread(
+                        threadID: thread.id,
+                        title: title
+                    )
                     self.finishOpeningThread(thread.id, successMessage: successMessage)
                 } catch {
                     self.showTransientStatus(

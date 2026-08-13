@@ -14,7 +14,9 @@
 
 ## 安装
 
-需要 macOS 13+ 和 Xcode Command Line Tools。
+需要 macOS 13+。普通用户可在 GitHub Releases 下载 `AI-Work-Island.app.zip`，解压后把“AI 工作岛”拖入“应用程序”并打开。首次启动若被 macOS 拦截，请在“系统设置 → 隐私与安全性”中选择“仍要打开”；录音守护还会请求麦克风和辅助功能权限。
+
+从源码安装需要 Xcode Command Line Tools：
 
 ```bash
 git clone https://github.com/Neo-niu/ai-work-island.git

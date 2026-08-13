@@ -31,6 +31,21 @@ import Testing
     #expect(command == .diagnoseAccessibilityPID(6498))
 }
 
+@Test func parsesAnOpenThreadDiagnostic() {
+    let command = LaunchCommand(arguments: ["app", "--diagnose-open-thread", "测试新会话"])
+    #expect(command == .diagnoseOpenThread("测试新会话"))
+}
+
+@Test func parsesAnOpenThreadIDDiagnostic() {
+    let command = LaunchCommand(arguments: [
+        "app", "--diagnose-open-thread-id", "019ff918-f2eb-73a3-a570-98baa2de51f8", "测试新会话",
+    ])
+    #expect(command == .diagnoseOpenThreadID(
+        "019ff918-f2eb-73a3-a570-98baa2de51f8",
+        "测试新会话"
+    ))
+}
+
 @Test func parsesALoginItemStatusDiagnostic() {
     let command = LaunchCommand(arguments: ["CodexTouchBar", "--login-item-status"])
 
