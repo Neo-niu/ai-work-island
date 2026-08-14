@@ -11,7 +11,9 @@
 
 [下载安装](https://github.com/Neo-niu/ai-work-island/releases/latest) · [工作方式](#工作方式) · [隐私边界](#默认本地优先) · [English](README.md)
 
-![AI 工作岛从状态胶囊展开为 Codex 任务中枢](docs/media/ai-work-island-expand-demo.gif)
+![AI 工作岛在完整桌面中的实际位置，并从状态胶囊展开为 Codex 任务中枢](docs/media/ai-work-island-fullscreen-demo.webp)
+
+[观看 1080p 演示](docs/media/ai-work-island-fullscreen-demo.mp4) · 桌面背景已做隐私模糊处理
 
 </div>
 

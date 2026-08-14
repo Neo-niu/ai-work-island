@@ -11,7 +11,9 @@
 
 [Download](https://github.com/Neo-niu/ai-work-island/releases/latest) · [How it works](#how-it-works) · [Privacy](#local-first-by-default) · [中文说明](README.zh-CN.md)
 
-![AI Work Island expands from a compact status capsule into the Codex task hub](docs/media/ai-work-island-expand-demo.gif)
+![AI Work Island shown at full-screen scale, expanding from its desktop capsule into the Codex task hub](docs/media/ai-work-island-fullscreen-demo.webp)
+
+[Watch the 1080p demo](docs/media/ai-work-island-fullscreen-demo.mp4) · Background blurred for privacy
 
 </div>
 
