@@ -149,7 +149,7 @@ import Testing
     #expect(DesktopPanelLayout.conversationContentWidth == 322)
 }
 
-@Test func conversationCardReservesTwoLineStatusHeight() {
+@Test func cleanConversationCardUsesCompactSingleLineStatus() {
     let withoutConversation = DesktopPanelLayout.contentSize(
         visibleItemCount: 1,
         sectionCount: 1
@@ -160,7 +160,7 @@ import Testing
         conversationItemCount: 1
     )
 
-    #expect(withConversation.height - withoutConversation.height == 54)
+    #expect(withConversation.height - withoutConversation.height == 42)
 }
 
 @Test func detailedModeReservesReadableConversationSpace() {
@@ -178,17 +178,17 @@ import Testing
 
     #expect(DesktopContentMode.clean.title == "清爽模式")
     #expect(DesktopContentMode.detailed.title == "详细模式")
-    #expect(DesktopContentMode.detailed.conversationStatusLineCount == 4)
-    #expect(withConversation.height - withoutConversation.height == 86)
+    #expect(DesktopContentMode.detailed.conversationStatusLineCount == 3)
+    #expect(withConversation.height - withoutConversation.height == 74)
 }
 
 @Test func contentDensityModesKeepTheirCardMetricsAndBoundedPanelHeight() {
-    #expect(DesktopContentMode.clean.conversationCardHeight == 116)
-    #expect(DesktopContentMode.clean.conversationExtraHeight == 54)
-    #expect(DesktopContentMode.clean.conversationStatusLineCount == 2)
-    #expect(DesktopContentMode.clean.conversationStatusFontSize == 10)
-    #expect(DesktopContentMode.detailed.conversationCardHeight == 148)
-    #expect(DesktopContentMode.detailed.conversationExtraHeight == 86)
+    #expect(DesktopContentMode.clean.conversationCardHeight == 104)
+    #expect(DesktopContentMode.clean.conversationExtraHeight == 42)
+    #expect(DesktopContentMode.clean.conversationStatusLineCount == 1)
+    #expect(DesktopContentMode.clean.conversationStatusFontSize == 11)
+    #expect(DesktopContentMode.detailed.conversationCardHeight == 136)
+    #expect(DesktopContentMode.detailed.conversationExtraHeight == 74)
     #expect(DesktopContentMode.detailed.conversationStatusFontSize == 11.5)
 
     #expect(DesktopPanelLayout.contentSize(
