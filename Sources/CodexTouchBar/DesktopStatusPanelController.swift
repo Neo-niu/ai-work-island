@@ -18,10 +18,10 @@ enum DesktopContentMode: String, CaseIterable, Equatable {
         }
     }
 
-    var conversationCardHeight: CGFloat { self == .clean ? 116 : 148 }
-    var conversationExtraHeight: Int { self == .clean ? 54 : 86 }
-    var conversationStatusLineCount: Int { self == .clean ? 2 : 4 }
-    var conversationStatusFontSize: CGFloat { self == .clean ? 10 : 11.5 }
+    var conversationCardHeight: CGFloat { self == .clean ? 104 : 136 }
+    var conversationExtraHeight: Int { self == .clean ? 42 : 74 }
+    var conversationStatusLineCount: Int { self == .clean ? 1 : 3 }
+    var conversationStatusFontSize: CGFloat { self == .clean ? 11 : 11.5 }
 }
 
 enum DesktopPanelWindowPolicy {
@@ -517,7 +517,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     private let floatingButtonView = FloatingStatusButtonView()
     private let titleLabel = NSTextField(labelWithString: "AI 工作岛")
     private let statusCapsule = StatusCapsuleView()
-    private let newTaskInputBackground = RoundedGlassInputBackground()
+    private let newTaskInputBackground = RoundedInputBackground()
     private let newTaskPromptField = PastedImageTextField(string: "")
     private let newTaskImageCountLabel = NSTextField(labelWithString: "")
     private let newTaskSendButton = FirstMouseButton()
@@ -1208,8 +1208,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         itemStack.spacing = 6
         itemStack.distribution = .fill
 
-        footerLabel.font = .systemFont(ofSize: 10)
-        footerLabel.textColor = .tertiaryLabelColor
+        footerLabel.font = .systemFont(ofSize: 10.5)
+        footerLabel.textColor = NSColor.white.withAlphaComponent(0.58)
         footerLabel.lineBreakMode = .byTruncatingMiddle
 
         let contentStack = NSStackView(views: [header, newTaskInputBackground, quotaStack, itemStack, footerLabel])
@@ -2345,7 +2345,7 @@ private final class StatusCapsuleView: NSView {
 }
 
 @MainActor
-private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
+private final class WorkItemRowView: NSView, NSTextFieldDelegate {
     var onSelected: (() -> Void)?
     var onDetailsSelected: (() -> Void)?
     var onPromptSubmitted: ((CodexPrompt) -> Void)?
@@ -2363,7 +2363,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
     private let outputButton = FirstMouseButton()
     private let codexTransferButton = FirstMouseButton()
     private let acknowledgeButton = FirstMouseButton()
-    private let conversationInputBackground = RoundedGlassInputBackground()
+    private let conversationInputBackground = RoundedInputBackground()
     private let promptField = PastedImageTextField(string: "")
     private let imageCountLabel = NSTextField(labelWithString: "")
     private let sendButton = FirstMouseButton()
@@ -2382,15 +2382,12 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
         opensThreadWhenPromptIsEmpty = CodexCardPrimaryActionPolicy
             .opensThreadWhenPromptIsEmpty(status: item.status)
         super.init(frame: .zero)
-        material = .sidebar
-        blendingMode = .withinWindow
-        state = .active
         wantsLayer = true
         layer?.cornerRadius = 14
         layer?.cornerCurve = .continuous
         layer?.borderWidth = 0.5
         layer?.borderColor = DesktopPanelPalette.stroke.withAlphaComponent(0.88).cgColor
-        layer?.backgroundColor = DesktopPanelPalette.card.withAlphaComponent(0.92).cgColor
+        layer?.backgroundColor = DesktopPanelPalette.card.withAlphaComponent(0.98).cgColor
         layer?.masksToBounds = true
 
         let indicator = NSView()
@@ -2404,7 +2401,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
         ])
 
         let title = NSTextField(labelWithString: item.displayTitle)
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
+        title.font = .systemFont(ofSize: 13.5, weight: .semibold)
         title.lineBreakMode = .byTruncatingTail
         title.maximumNumberOfLines = 1
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -2413,8 +2410,8 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
             ? item.displayDetail
             : item.phase.map { "正在：\($0) · \(item.displayDetail)" } ?? item.displayDetail
         let detail = NSTextField(labelWithString: detailText)
-        detail.font = .systemFont(ofSize: 11)
-        detail.textColor = .secondaryLabelColor
+        detail.font = .systemFont(ofSize: 11.5)
+        detail.textColor = NSColor.white.withAlphaComponent(0.68)
         detail.lineBreakMode = .byTruncatingMiddle
         detail.maximumNumberOfLines = 1
         detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -2427,7 +2424,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
         textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let status = NSTextField(labelWithString: item.status.chineseTitle)
-        status.font = .systemFont(ofSize: 11, weight: .medium)
+        status.font = .systemFont(ofSize: 10.5, weight: .semibold)
         status.textColor = contentMode == .detailed ? .labelColor : item.status.color
         status.alignment = .right
         status.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -2503,7 +2500,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
             )
             conversationStatusLabel.textColor = contentMode == .detailed
                 ? NSColor.white.withAlphaComponent(0.90)
-                : .tertiaryLabelColor
+                : NSColor.white.withAlphaComponent(0.76)
             conversationStatusLabel.lineBreakMode = .byTruncatingTail
             conversationStatusLabel.maximumNumberOfLines = contentMode.conversationStatusLineCount
             conversationStatusLabel.cell?.wraps = true
@@ -2517,7 +2514,7 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
             )
 
             promptField.placeholderString = "继续该项目…"
-            promptField.font = .systemFont(ofSize: 11)
+            promptField.font = .systemFont(ofSize: 12)
             promptField.isBordered = false
             promptField.drawsBackground = false
             promptField.focusRingType = .none
@@ -2713,14 +2710,9 @@ private final class WorkItemRowView: NSVisualEffectView, NSTextFieldDelegate {
         }
         layer?.borderColor = (hovering ? NSColor.controlAccentColor : DesktopPanelPalette.stroke)
             .withAlphaComponent(hovering ? 0.50 : 0.88).cgColor
-        if contentMode == .detailed {
-            layer?.backgroundColor = DesktopPanelPalette.card
-                .blended(withFraction: hovering ? 0.06 : 0, of: .white)?
-                .withAlphaComponent(0.94).cgColor
-        } else {
-            layer?.backgroundColor = (hovering ? NSColor.controlAccentColor : DesktopPanelPalette.card)
-                .withAlphaComponent(hovering ? 0.14 : 0.92).cgColor
-        }
+        layer?.backgroundColor = DesktopPanelPalette.card
+            .blended(withFraction: hovering ? 0.055 : 0, of: .white)?
+            .withAlphaComponent(0.98).cgColor
     }
 
     private func actionButton(symbol: String, toolTip: String) -> NSButton {
@@ -2820,15 +2812,12 @@ final class FirstMouseButton: NSButton {
 }
 
 @MainActor
-private final class RoundedGlassInputBackground: NSVisualEffectView {
+private final class RoundedInputBackground: NSView {
     private let highlightLayer = CAGradientLayer()
     private var isFocused = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        material = .hudWindow
-        blendingMode = .withinWindow
-        state = .active
         wantsLayer = true
         layer?.cornerRadius = 13
         layer?.cornerCurve = .continuous
@@ -2866,17 +2855,17 @@ private final class RoundedGlassInputBackground: NSVisualEffectView {
     private func updateAppearance() {
         let accent = NSColor.controlAccentColor
         highlightLayer.colors = [
-            NSColor.white.withAlphaComponent(0.12).cgColor,
-            accent.withAlphaComponent(isFocused ? 0.16 : 0.05).cgColor,
+            NSColor.white.withAlphaComponent(0.06).cgColor,
+            accent.withAlphaComponent(isFocused ? 0.10 : 0.025).cgColor,
             NSColor.clear.cgColor,
         ]
-        layer?.backgroundColor = DesktopPanelPalette.input.withAlphaComponent(0.96).cgColor
+        layer?.backgroundColor = DesktopPanelPalette.input.withAlphaComponent(0.99).cgColor
         layer?.borderWidth = isFocused ? 1.1 : 0.7
         layer?.borderColor = (isFocused ? accent : DesktopPanelPalette.stroke)
             .withAlphaComponent(isFocused ? 0.78 : 0.92).cgColor
-        layer?.shadowColor = accent.withAlphaComponent(isFocused ? 0.24 : 0.08).cgColor
-        layer?.shadowOpacity = 1
-        layer?.shadowRadius = isFocused ? 8 : 4
+        layer?.shadowColor = accent.withAlphaComponent(0.22).cgColor
+        layer?.shadowOpacity = isFocused ? 1 : 0
+        layer?.shadowRadius = 8
         layer?.shadowOffset = .zero
     }
 }

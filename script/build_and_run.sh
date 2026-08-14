@@ -79,11 +79,11 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundleIconName</key>
   <string>AppIcon</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.5.17</string>
+  <string>0.5.18</string>
   <key>CFBundleVersion</key>
-  <string>49</string>
+  <string>50</string>
   <key>GitHubReleaseTag</key>
-  <string>v2026.08.13</string>
+  <string>v0.5.18</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
   <key>LSMultipleInstancesProhibited</key>
