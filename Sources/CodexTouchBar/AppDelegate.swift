@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let desktopPanelVisibleDefaultsKey = "desktopPanelVisible"
     private static let backgroundPanelModeDefaultsKey = "backgroundPanelMode"
     private static let desktopContentModeDefaultsKey = "desktopContentMode"
+    private static let silentModeDefaultsKey = "silentMode"
+    private static let appearanceModeDefaultsKey = "appearanceMode"
     private static let recordingReminderCategory = "voice-memo-silence-reminder"
     private static let finishRecordingAction = "finish-and-keep-voice-memo"
     private static let continueRecordingAction = "continue-voice-memo"
@@ -50,6 +52,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var desktopPanelMenuItem: NSMenuItem?
     private var cleanContentModeMenuItem: NSMenuItem?
     private var detailedContentModeMenuItem: NSMenuItem?
+    private var silentModeMenuItem: NSMenuItem?
+    private var appearanceMenuItems: [AppAppearanceMode: NSMenuItem] = [:]
     private var finishVoiceMemoMenuItem: NSMenuItem?
     private var continueVoiceMemoMenuItem: NSMenuItem?
     private var refreshTimer: Timer?
@@ -66,10 +70,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var threadStatusCycler = ThreadStatusCycler()
     private var latestHasActiveWork = false
     private var conversationInFlight = false
+    private var pendingCreatedThreads: [String: PendingCreatedThread] = [:]
     private var cardConversationsInFlight: Set<String> = []
     private var voiceMemoGuardianState: VoiceMemoGuardianState?
     private var didRequestRecordingNotificationAuthorization = false
     private var recordingNotificationsAuthorized = false
+
+    private var isSilentMode: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.silentModeDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.silentModeDefaultsKey) }
+    }
+
+    private var appearanceMode: AppAppearanceMode {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: Self.appearanceModeDefaultsKey) else {
+                return .system
+            }
+            return AppAppearanceMode(rawValue: raw) ?? .system
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Self.appearanceModeDefaultsKey) }
+    }
 
     private var isEnabled: Bool {
         get {
@@ -199,6 +219,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         desktopPanelController.onNewConversationDirectorySelected = { [weak self] in
             self?.chooseProjectForNewConversation()
         }
+        desktopPanelController.onStopRecordingSelected = { [weak self] in
+            self?.finishVoiceMemoRecording()
+        }
         desktopPanelController.onVisibilityChanged = { [weak self] visible in
             guard let self else { return }
             self.isDesktopPanelVisible = visible
@@ -207,6 +230,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         desktopPanelController.setDisplayMode(isBackgroundPanelMode ? .background : .floating)
         desktopPanelController.setContentMode(desktopContentMode)
+        desktopPanelController.suppressesAutomaticReveals = isSilentMode
+        desktopPanelController.setAppearanceMode(appearanceMode)
 
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
@@ -297,6 +322,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backgroundPanelModeMenuItem.state = isBackgroundPanelMode ? .on : .off
         menu.addItem(backgroundPanelModeMenuItem)
 
+        let silentModeMenuItem = NSMenuItem(
+            title: "静默运行（开会 / 投屏）",
+            action: #selector(toggleSilentMode(_:)),
+            keyEquivalent: ""
+        )
+        silentModeMenuItem.target = self
+        silentModeMenuItem.state = isSilentMode ? .on : .off
+        menu.addItem(silentModeMenuItem)
+
+        let appearanceItem = NSMenuItem(title: "外观", action: nil, keyEquivalent: "")
+        let appearanceMenu = NSMenu(title: "外观")
+        for mode in AppAppearanceMode.allCases {
+            let item = NSMenuItem(
+                title: mode.title,
+                action: #selector(selectAppearanceMode(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = mode.rawValue
+            item.state = appearanceMode == mode ? .on : .off
+            appearanceMenu.addItem(item)
+            appearanceMenuItems[mode] = item
+        }
+        appearanceItem.submenu = appearanceMenu
+        menu.addItem(appearanceItem)
+
         let contentModeItem = NSMenuItem(title: "任务信息密度", action: nil, keyEquivalent: "")
         let contentModeMenu = NSMenu(title: "任务信息密度")
         let cleanContentModeMenuItem = NSMenuItem(
@@ -378,6 +429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.desktopPanelMenuItem = desktopPanelMenuItem
         self.cleanContentModeMenuItem = cleanContentModeMenuItem
         self.detailedContentModeMenuItem = detailedContentModeMenuItem
+        self.silentModeMenuItem = silentModeMenuItem
         self.finishVoiceMemoMenuItem = finishVoiceMemoItem
         self.continueVoiceMemoMenuItem = continueVoiceMemoItem
 
@@ -404,8 +456,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let selectedProjectName = self.isCodexFrontmost
                 ? self.accessibilityController.selectedSidebarProjectName()
                 : nil
+            let continuity = CreatedThreadContinuity.reconcile(
+                scannedThreads: snapshot.threads,
+                pending: self.pendingCreatedThreads
+            )
+            self.pendingCreatedThreads = continuity.pending
             let groups = grouper.groups(
-                from: snapshot.threads,
+                from: continuity.threads,
                 selectedProjectRoots: snapshot.selectedProjectRoots,
                 selectedProjectName: selectedProjectName
             )
@@ -863,9 +920,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [weak self] in
             guard let self else { return }
             do {
-                _ = try await CodexConversationBridge.send(
+                let result = try await CodexConversationBridge.send(
                     prompt: prompt,
                     route: .new(cwd: projectURL)
+                )
+                let now = Date()
+                let title = prompt.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let fallback = ActiveThread(
+                    id: result.threadID,
+                    title: title.isEmpty ? "图片任务" : title,
+                    cwd: projectURL,
+                    startedAt: now,
+                    updatedAt: now
+                )
+                pendingCreatedThreads[result.threadID] = PendingCreatedThread(
+                    thread: fallback,
+                    expiresAt: now.addingTimeInterval(30 * 60)
                 )
                 showTransientStatus("\(projectURL.lastPathComponent) 会话已创建")
                 requestRefresh()
@@ -1019,6 +1089,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showRecordingSilenceReminder(_ state: VoiceMemoGuardianState) {
+        guard !isSilentMode else { return }
         guard recordingNotificationsAuthorized else {
             showRecordingSilenceAlert()
             return
@@ -1084,6 +1155,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             requestRefresh()
         }
         updatePresentation()
+    }
+
+    @objc private func toggleSilentMode(_ sender: NSMenuItem) {
+        isSilentMode.toggle()
+        sender.state = isSilentMode ? .on : .off
+        desktopPanelController.suppressesAutomaticReveals = isSilentMode
+        if isSilentMode {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(
+                withIdentifiers: pendingRecordingNotificationIdentifiers()
+            )
+            showTransientStatus("已开启静默运行")
+        } else {
+            showTransientStatus("已关闭静默运行")
+        }
+    }
+
+    @objc private func selectAppearanceMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = AppAppearanceMode(rawValue: raw) else { return }
+        appearanceMode = mode
+        for (candidate, item) in appearanceMenuItems {
+            item.state = candidate == mode ? .on : .off
+        }
+        desktopPanelController.setAppearanceMode(mode)
+        showTransientStatus("外观：\(mode.title)")
+    }
+
+    private func pendingRecordingNotificationIdentifiers() -> [String] {
+        guard let state = voiceMemoGuardianState else { return [] }
+        return ["voice-memo-silence-\(Int(state.startedAt.timeIntervalSince1970))"]
     }
 
     @objc private func toggleDesktopPanel(_ sender: NSMenuItem) {

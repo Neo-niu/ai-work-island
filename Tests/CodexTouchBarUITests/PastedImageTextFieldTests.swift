@@ -82,6 +82,32 @@ import Testing
 }
 
 @MainActor
+@Test func commandVPastesPlainTextEvenWithoutAnActiveFieldEditor() throws {
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    defer { pasteboard.clearContents() }
+    #expect(pasteboard.setString("粘贴的新任务", forType: .string))
+
+    let field = PastedImageTextField(string: "已有：")
+    let event = try #require(NSEvent.keyEvent(
+        with: .keyDown,
+        location: .zero,
+        modifierFlags: .command,
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        characters: "v",
+        charactersIgnoringModifiers: "v",
+        isARepeat: false,
+        keyCode: 9
+    ))
+
+    #expect(field.performKeyEquivalent(with: event))
+    #expect(field.stringValue == "已有：粘贴的新任务")
+    #expect(field.pastedImageCount == 0)
+}
+
+@MainActor
 @Test func deleteRemovesTheLastPastedImageWhenTheTextFieldIsEmpty() throws {
     let pasteboard = NSPasteboard.general
     pasteboard.clearContents()

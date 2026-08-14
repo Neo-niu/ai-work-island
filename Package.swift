@@ -53,7 +53,8 @@ let package = Package(
         .testTarget(
             name: "CodexTouchBarUITests",
             dependencies: ["CodexTouchBar", "CodexTouchBarCore"],
-            path: "Tests/CodexTouchBarUITests"
+            path: "Tests/CodexTouchBarUITests",
+            exclude: ["__Snapshots__"]
         ),
     ]
 )

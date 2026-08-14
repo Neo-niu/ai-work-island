@@ -190,6 +190,10 @@ import Testing
     #expect(DesktopContentMode.detailed.conversationCardHeight == 136)
     #expect(DesktopContentMode.detailed.conversationExtraHeight == 74)
     #expect(DesktopContentMode.detailed.conversationStatusFontSize == 11.5)
+    #expect(DesktopContentMode.detailed.conversationStatusTextColor(isBusy: false) == .labelColor)
+    #expect(DesktopContentMode.detailed.conversationStatusTextColor(isBusy: true) == .labelColor)
+    #expect(DesktopContentMode.clean.conversationStatusTextColor(isBusy: false) == .secondaryLabelColor)
+    #expect(DesktopContentMode.clean.conversationStatusTextColor(isBusy: true) == .controlAccentColor)
 
     #expect(DesktopPanelLayout.contentSize(
         visibleItemCount: 7,
@@ -229,15 +233,35 @@ import Testing
 }
 
 @Test func desktopPanelUsesTheSelectedSmokeGrayPalette() {
-    let base = DesktopPanelPalette.base.usingColorSpace(.sRGB)
-    let card = DesktopPanelPalette.card.usingColorSpace(.sRGB)
-    let input = DesktopPanelPalette.input.usingColorSpace(.sRGB)
+    let dark = NSAppearance(named: .darkAqua)!
+    var base: NSColor?
+    var card: NSColor?
+    var input: NSColor?
+    dark.performAsCurrentDrawingAppearance {
+        base = DesktopPanelPalette.base.usingColorSpace(.sRGB)
+        card = DesktopPanelPalette.card.usingColorSpace(.sRGB)
+        input = DesktopPanelPalette.input.usingColorSpace(.sRGB)
+    }
 
-    #expect(base?.redComponent == 48.0 / 255.0)
-    #expect(base?.greenComponent == 50.0 / 255.0)
-    #expect(base?.blueComponent == 55.0 / 255.0)
-    #expect(card?.redComponent == 58.0 / 255.0)
-    #expect(input?.redComponent == 39.0 / 255.0)
+    let accuracy = 1.0e-12
+    #expect(abs((base?.redComponent ?? -1) - 48.0 / 255.0) < accuracy)
+    #expect(abs((base?.greenComponent ?? -1) - 50.0 / 255.0) < accuracy)
+    #expect(abs((base?.blueComponent ?? -1) - 55.0 / 255.0) < accuracy)
+    #expect(abs((card?.redComponent ?? -1) - 58.0 / 255.0) < accuracy)
+    #expect(abs((input?.redComponent ?? -1) - 39.0 / 255.0) < accuracy)
+
+    let light = NSAppearance(named: .aqua)!
+    var lightBase: NSColor?
+    light.performAsCurrentDrawingAppearance {
+        lightBase = DesktopPanelPalette.base.usingColorSpace(.sRGB)
+    }
+    #expect(abs((lightBase?.redComponent ?? -1) - 242.0 / 255.0) < accuracy)
+}
+
+@Test func appearanceModesMapToSystemLightAndDark() {
+    #expect(AppAppearanceMode.system.appearance == nil)
+    #expect(AppAppearanceMode.light.appearance?.name == .aqua)
+    #expect(AppAppearanceMode.dark.appearance?.name == .darkAqua)
 }
 
 @Test func voiceMemoGuardianRequiresSustainedQuietBeforeReminding() {
@@ -286,6 +310,38 @@ import Testing
 
     view.updateRecordingGuardian(nil)
     #expect(!view.isRecordingWaveformVisibleForTesting())
+}
+
+@MainActor @Test func recordingCapsuleOffersAnExplicitStopAction() {
+    let view = FloatingStatusButtonView(frame: NSRect(x: 0, y: 0, width: 108, height: 38))
+    var stopped = false
+    view.onStopRecording = { stopped = true }
+    view.updateRecordingGuardian(
+        VoiceMemoGuardianState(phase: .recording, startedAt: Date(), silentSince: nil)
+    )
+    #expect(view.isStopRecordingVisibleForTesting())
+    view.stopRecordingForTesting()
+    #expect(stopped)
+    view.updateRecordingGuardian(nil)
+    #expect(!view.isStopRecordingVisibleForTesting())
+}
+
+@MainActor
+@Test func hiddenRecordingStopButtonDoesNotTruncateCompanyQuota() {
+    let view = FloatingStatusButtonView(
+        frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.size)
+    )
+    let quota = CompanyModelQuota(
+        totalUSD: 200,
+        usedUSD: 28.12,
+        resetsAt: nil
+    )
+    view.update(snapshot: WorkStatusSnapshot(items: [], automationIssues: [], companyQuota: quota))
+    view.advanceCarousel()
+    view.layoutSubtreeIfNeeded()
+
+    #expect(view.displayedTextForTesting() == "公司 $172")
+    #expect(view.statusLabelHasEnoughWidthForTesting())
 }
 
 @Test func voiceMemoGuardianOverridesTheFloatingPillWithRecordingState() {
@@ -602,6 +658,12 @@ import Testing
         isPanelHovered: false,
         hasPendingAutoCollapse: true
     ))
+    #expect(!DesktopFloatingHoverBehavior.shouldScheduleAutoCollapse(
+        isHoverExpanded: true,
+        isPanelHovered: false,
+        hasPendingAutoCollapse: false,
+        suppressesUntilPointerReentry: true
+    ))
     #expect(DesktopFloatingHoverBehavior.isCurrentAutoCollapseRequest(
         firedRequestID: 8,
         currentRequestID: 8
@@ -672,6 +734,40 @@ import Testing
 
     #expect(controller.isWaitingForPointerLeaveToCollapse)
     controller.hide()
+}
+
+@MainActor
+@Test func screenReconfigurationRestoresTheRequestedFrontmostWindow() {
+    let controller = DesktopStatusPanelController()
+    controller.setDisplayMode(.floating)
+
+    controller.showCollapsed()
+    controller.orderWindowsOutForTesting()
+    controller.recoverAfterScreenConfigurationChange()
+    #expect(controller.floatingPanelIsVisibleForTesting)
+    #expect(!controller.panelIsVisibleForTesting)
+    #expect(controller.floatingPanelLevelForTesting == .floating)
+
+    controller.show()
+    controller.orderWindowsOutForTesting()
+    controller.recoverAfterScreenConfigurationChange()
+    #expect(controller.panelIsVisibleForTesting)
+    #expect(!controller.floatingPanelIsVisibleForTesting)
+    #expect(controller.panelLevelForTesting == .floating)
+
+    controller.hide()
+}
+
+@MainActor
+@Test func screenReconfigurationDoesNotRevealAnIntentionallyHiddenWorkIsland() {
+    let controller = DesktopStatusPanelController()
+    controller.showCollapsed()
+    controller.hide()
+
+    controller.recoverAfterScreenConfigurationChange()
+
+    #expect(!controller.panelIsVisibleForTesting)
+    #expect(!controller.floatingPanelIsVisibleForTesting)
 }
 
 @Test func visibleCapsuleRepairsAStaleExpandedWindowState() {

@@ -14,3 +14,12 @@ import Testing
     let data = Data(#"{"success":false,"error":"UNAUTHORIZED"}"#.utf8)
     #expect(CompanyModelQuota.parsePlatformResponse(data) == nil)
 }
+
+@Test func companyQuotaCanPersistAcrossAppRestarts() throws {
+    let original = CompanyModelQuota(totalUSD: 200, usedUSD: 16.08, resetsAt: Date(timeIntervalSince1970: 42))
+    let restored = try JSONDecoder().decode(
+        CompanyModelQuota.self,
+        from: JSONEncoder().encode(original)
+    )
+    #expect(restored == original)
+}

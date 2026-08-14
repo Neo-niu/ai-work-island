@@ -1,6 +1,6 @@
 import Foundation
 
-public struct CompanyModelQuota: Equatable, Sendable {
+public struct CompanyModelQuota: Codable, Equatable, Sendable {
     public let totalUSD: Double
     public let usedUSD: Double
     public let resetsAt: Date?
