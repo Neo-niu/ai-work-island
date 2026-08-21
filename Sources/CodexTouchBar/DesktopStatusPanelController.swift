@@ -18,9 +18,7 @@ enum DesktopContentMode: String, CaseIterable, Equatable {
         }
     }
 
-    var conversationCardHeight: CGFloat { self == .clean ? 104 : 136 }
-    var conversationExtraHeight: Int { self == .clean ? 42 : 74 }
-    var conversationStatusLineCount: Int { self == .clean ? 1 : 3 }
+    var maximumActivityCount: Int { self == .clean ? 4 : 6 }
     var conversationStatusFontSize: CGFloat { self == .clean ? 11 : 11.5 }
 
     func conversationStatusTextColor(isBusy: Bool) -> NSColor {
@@ -30,6 +28,153 @@ enum DesktopContentMode: String, CaseIterable, Equatable {
         case .clean:
             isBusy ? .controlAccentColor : .secondaryLabelColor
         }
+    }
+}
+
+enum DesktopConversationLayout {
+    static let activityLineBreakMode: NSLineBreakMode = .byWordWrapping
+
+    static func cardHeight(
+        item: WorkItem,
+        lastAssistantResult: String?,
+        contentMode: DesktopContentMode
+    ) -> CGFloat {
+        let summary = summary(
+            item: item,
+            lastAssistantResult: lastAssistantResult,
+            contentMode: contentMode
+        )
+        let visibleLineCount: Int
+        if item.status == .running {
+            visibleLineCount = max(1, summary.entries
+                .prefix(contentMode.maximumActivityCount)
+                .reduce(into: 0) { total, entry in
+                    total += estimatedLineCount(for: entry, maximum: 3)
+                })
+        } else {
+            let result = summary.entries.first ?? ""
+            let maximum = contentMode == .clean ? 4 : 8
+            visibleLineCount = estimatedLineCount(for: result, maximum: maximum)
+        }
+        let lineHeight: CGFloat = contentMode == .clean ? 18 : 20
+        let progressHeight: CGFloat = summary.progressText == nil ? 0 : 15
+        let entrySpacing = item.status == .running
+            ? CGFloat(max(0, min(summary.entries.count, contentMode.maximumActivityCount) - 1)) * 6
+            : 0
+        return 92 + CGFloat(visibleLineCount) * lineHeight + entrySpacing + progressHeight
+    }
+
+    static func extraHeight(
+        item: WorkItem,
+        lastAssistantResult: String?,
+        contentMode: DesktopContentMode
+    ) -> Int {
+        max(0, Int(cardHeight(
+            item: item,
+            lastAssistantResult: lastAssistantResult,
+            contentMode: contentMode
+        ) - 62))
+    }
+
+    static func summary(
+        item: WorkItem,
+        lastAssistantResult: String?,
+        contentMode: DesktopContentMode
+    ) -> CodexCardStatusSummary {
+        if item.status == .running {
+            return .running(
+                phase: item.phase,
+                completedSteps: item.phaseIndex,
+                totalSteps: item.phaseCount,
+                recentActivity: item.recentActivity,
+                activities: Array((item.activities ?? []).suffix(contentMode.maximumActivityCount))
+            )
+        }
+        return .waiting(lastAssistantResult: lastAssistantResult)
+    }
+
+    private static func estimatedLineCount(for text: String, maximum: Int) -> Int {
+        let lines = text.components(separatedBy: .newlines).reduce(into: 0) { total, line in
+            total += max(1, Int(ceil(Double(line.count) / 58.0)))
+        }
+        return min(max(1, lines), maximum)
+    }
+}
+
+enum DesktopPanelCenterLayout {
+    static func centeredFrame(panelSize: NSSize, in visibleFrame: NSRect) -> NSRect {
+        NSRect(
+            x: visibleFrame.midX - panelSize.width / 2,
+            y: visibleFrame.midY - panelSize.height / 2,
+            width: panelSize.width,
+            height: panelSize.height
+        )
+    }
+}
+
+enum DesktopPanelRememberedPosition {
+    static func restoredFrame(
+        panelSize: NSSize,
+        center: NSPoint,
+        visibleFrames: [NSRect],
+        fallbackVisibleFrame: NSRect
+    ) -> NSRect {
+        let candidate = NSRect(
+            x: center.x - panelSize.width / 2,
+            y: center.y - panelSize.height / 2,
+            width: panelSize.width,
+            height: panelSize.height
+        )
+        let bestMatch = visibleFrames
+            .map { visibleFrame -> (frame: NSRect, area: CGFloat) in
+                let intersection = visibleFrame.intersection(candidate)
+                let area = intersection.isNull ? 0 : intersection.width * intersection.height
+                return (visibleFrame, area)
+            }
+            .max { $0.area < $1.area }
+        let targetVisibleFrame = bestMatch.flatMap { $0.area > 0 ? $0.frame : nil }
+            ?? fallbackVisibleFrame
+        return DesktopWindowVisibility.clampedFrame(candidate, in: targetVisibleFrame)
+    }
+}
+
+enum DesktopPanelTransitionMotion {
+    static let travel: CGFloat = 18
+
+    static func frameTowardSource(
+        targetFrame: NSRect,
+        sourceFrame: NSRect,
+        travel: CGFloat = travel
+    ) -> NSRect {
+        let delta = NSPoint(
+            x: sourceFrame.midX - targetFrame.midX,
+            y: sourceFrame.midY - targetFrame.midY
+        )
+        let length = hypot(delta.x, delta.y)
+        guard length > 0 else { return targetFrame }
+        return targetFrame.offsetBy(
+            dx: delta.x / length * travel,
+            dy: delta.y / length * travel
+        )
+    }
+}
+
+struct DesktopWindowPresentationTransition: Equatable {
+    private(set) var generation: UInt = 0
+    private(set) var activeGeneration: UInt?
+
+    var suppressesPositionSynchronization: Bool { activeGeneration != nil }
+
+    mutating func begin() -> UInt {
+        generation &+= 1
+        activeGeneration = generation
+        return generation
+    }
+
+    mutating func finish(_ candidate: UInt) -> Bool {
+        guard activeGeneration == candidate else { return false }
+        activeGeneration = nil
+        return true
     }
 }
 
@@ -90,34 +235,77 @@ enum DesktopWindowVisibility {
 }
 
 enum DesktopPanelAnchorLayout {
-    static func panelFrame(
-        anchoredToFloatingPanel floatingFrame: NSRect,
-        panelSize: NSSize
-    ) -> NSRect {
+    static func anchor(fromPanelFrame frame: NSRect) -> NSPoint {
+        NSPoint(x: frame.maxX, y: frame.maxY)
+    }
+
+    static func anchor(
+        fromFloatingFrame frame: NSRect,
+        floatingContentInset: CGFloat = DesktopFloatingButtonLayout.animationInset
+    ) -> NSPoint {
+        NSPoint(x: frame.maxX - floatingContentInset, y: frame.maxY - floatingContentInset)
+    }
+
+    static func panelFrame(anchoredTo anchor: NSPoint, panelSize: NSSize) -> NSRect {
         NSRect(
-            x: floatingFrame.maxX - panelSize.width,
-            y: floatingFrame.maxY - panelSize.height,
+            x: anchor.x - panelSize.width,
+            y: anchor.y - panelSize.height,
             width: panelSize.width,
             height: panelSize.height
         )
     }
 
     static func floatingFrame(
-        anchoredToPanel panelFrame: NSRect,
-        floatingSize: NSSize
+        anchoredTo anchor: NSPoint,
+        floatingSize: NSSize,
+        floatingContentInset: CGFloat = DesktopFloatingButtonLayout.animationInset
     ) -> NSRect {
         NSRect(
-            x: panelFrame.maxX - floatingSize.width,
-            y: panelFrame.maxY - floatingSize.height,
+            x: anchor.x + floatingContentInset - floatingSize.width,
+            y: anchor.y + floatingContentInset - floatingSize.height,
             width: floatingSize.width,
             height: floatingSize.height
+        )
+    }
+
+    static func panelFrame(
+        anchoredToFloatingPanel floatingFrame: NSRect,
+        panelSize: NSSize,
+        floatingContentInset: CGFloat = DesktopFloatingButtonLayout.animationInset
+    ) -> NSRect {
+        panelFrame(
+            anchoredTo: anchor(
+                fromFloatingFrame: floatingFrame,
+                floatingContentInset: floatingContentInset
+            ),
+            panelSize: panelSize
+        )
+    }
+
+    static func floatingFrame(
+        anchoredToPanel panelFrame: NSRect,
+        floatingSize: NSSize,
+        floatingContentInset: CGFloat = DesktopFloatingButtonLayout.animationInset
+    ) -> NSRect {
+        floatingFrame(
+            anchoredTo: anchor(fromPanelFrame: panelFrame),
+            floatingSize: floatingSize,
+            floatingContentInset: floatingContentInset
         )
     }
 }
 
 enum DesktopPanelLayout {
-    static let width: CGFloat = 372
-    static let contentHorizontalInset: CGFloat = 14
+    enum Section: Equatable {
+        case header
+        case tasks
+        case newTask
+        case quota
+        case footer
+    }
+
+    static let width: CGFloat = 480
+    static let contentHorizontalInset: CGFloat = 16
     static let workItemHorizontalInset: CGFloat = 11
     static let contentWidth = width - contentHorizontalInset * 2
     static let conversationContentWidth = contentWidth - workItemHorizontalInset * 2
@@ -126,20 +314,67 @@ enum DesktopPanelLayout {
         visibleItemCount: Int,
         sectionCount: Int = 0,
         conversationItemCount: Int = 0,
-        contentMode: DesktopContentMode = .clean
+        contentMode: DesktopContentMode = .clean,
+        conversationExtraHeightOverride: Int? = nil
     ) -> NSSize {
-        let baseHeight = 184
+        let baseHeight = 172
         let itemHeight = max(1, visibleItemCount) * 62
         let sectionHeight = sectionCount * 22
-        let conversationHeight = conversationItemCount * contentMode.conversationExtraHeight
+        let conversationHeight = conversationExtraHeightOverride
+            ?? conversationItemCount * (contentMode == .clean ? 84 : 104)
         let height = CGFloat(baseHeight + itemHeight + sectionHeight + conversationHeight)
-        return NSSize(width: width, height: min(height, contentMode == .clean ? 700 : 720))
+        return NSSize(width: width, height: min(height, contentMode == .clean ? 720 : 746))
+    }
+
+    static let sectionOrder: [Section] = [.header, .tasks, .newTask, .quota, .footer]
+}
+
+enum DesktopPanelTypography {
+    static let activityAlignment: NSTextAlignment = .left
+    static let metadataFontSize: CGFloat = 11.5
+    static let sectionFontSize: CGFloat = 11.5
+}
+
+struct DesktopQuotaPresentation: Equatable {
+    let text: String
+    let lowestRemainingPercent: Int?
+
+    static func make(snapshot: WorkStatusSnapshot) -> Self {
+        var parts: [String] = []
+        var remaining: [Int] = []
+        if let company = snapshot.companyQuota {
+            parts.append("公司 \(company.remainingPercent)%")
+            remaining.append(company.remainingPercent)
+        } else {
+            parts.append("公司额度待配置")
+        }
+        let codexParts = [
+            snapshot.codexShortTermLimit.map { "5小时 \($0.remainingPercent)%" },
+            snapshot.codexWeeklyLimit.map { "本周 \($0.remainingPercent)%" },
+        ].compactMap { $0 }
+        if !codexParts.isEmpty {
+            parts.append("Codex " + codexParts.joined(separator: " / "))
+        }
+        remaining.append(contentsOf: [
+            snapshot.codexShortTermLimit?.remainingPercent,
+            snapshot.codexWeeklyLimit?.remainingPercent,
+        ].compactMap { $0 })
+        return Self(
+            text: parts.joined(separator: " · "),
+            lowestRemainingPercent: remaining.min()
+        )
+    }
+}
+
+enum WorkItemCardActionPolicy {
+    static func showsPersistentPrimaryAction(status: WorkItemStatus) -> Bool {
+        status == .waiting || status == .failed || status == .stale
     }
 }
 
 enum DesktopPanelResizePolicy {
-    static let minimumFrameSize = NSSize(width: 320, height: 260)
-    static let maximumFrameSize = NSSize(width: 620, height: 746)
+    static let minimumFrameSize = NSSize(width: 480, height: 320)
+    static let maximumFrameSize = NSSize(width: 720, height: 820)
 
     static func clampedFrameSize(_ size: NSSize) -> NSSize {
         NSSize(
@@ -163,6 +398,7 @@ enum DesktopPanelResizePolicy {
 enum DesktopPanelPalette {
     static let base = adaptive(dark: 0x303237, light: 0xF2F3F5)
     static let card = adaptive(dark: 0x3A3C42, light: 0xFFFFFF)
+    static let hoveredCard = adaptive(dark: 0x3D4047, light: 0xF7F8FA)
     static let input = adaptive(dark: 0x27292D, light: 0xE9EBEF)
     static let stroke = adaptive(dark: 0x575A61, light: 0xC7CBD2)
 
@@ -176,6 +412,16 @@ enum DesktopPanelPalette {
                 alpha: 1
             )
         }
+    }
+}
+
+extension NSColor {
+    func cgColor(resolvedFor appearance: NSAppearance) -> CGColor {
+        var resolved = cgColor
+        appearance.performAsCurrentDrawingAppearance {
+            resolved = cgColor
+        }
+        return resolved
     }
 }
 
@@ -201,17 +447,23 @@ enum AppAppearanceMode: String, CaseIterable {
 
 enum DesktopFloatingButtonLayout {
     static let size = NSSize(width: 108, height: 38)
+    static let completionSize = NSSize(width: 320, height: 76)
     static let animationInset: CGFloat = 6
-    static let canvasSize = NSSize(
-        width: size.width + animationInset * 2,
-        height: size.height + animationInset * 2
-    )
+    static func canvasSize(for contentSize: NSSize) -> NSSize {
+        NSSize(
+            width: contentSize.width + animationInset * 2,
+            height: contentSize.height + animationInset * 2
+        )
+    }
+    static let canvasSize = canvasSize(for: size)
+    static let completionCanvasSize = canvasSize(for: completionSize)
     static let cornerRadius: CGFloat = size.height / 2
     static let statusDotSize: CGFloat = 8
 }
 
 struct DesktopFloatingButtonPresentation: Equatable {
     let displayText: String
+    let detailText: String?
     let tintColor: NSColor
     let pulses: Bool
     let accessibilityLabel: String
@@ -246,9 +498,10 @@ struct DesktopFloatingButtonPresentation: Equatable {
             pulses = false
         }
 
-        let accessibilityLabel = "恢复 AI 工作岛；当前\(displayText)"
+        let accessibilityLabel = "恢复 AI工作岛；当前\(displayText)"
         return Self(
             displayText: displayText,
+            detailText: nil,
             tintColor: tintColor,
             pulses: pulses,
             accessibilityLabel: accessibilityLabel
@@ -267,25 +520,19 @@ struct DesktopFloatingButtonPresentation: Equatable {
 
         var pages = [work]
         if let quota = snapshot.companyQuota {
-            let amount = quota.remainingUSD >= 10
-                ? String(format: "$%.0f", quota.remainingUSD)
-                : String(format: "$%.1f", quota.remainingUSD)
             pages.append(Self.quota(
-                displayText: "公司 \(amount)",
+                displayText: "公司 \(quota.remainingPercent)%",
                 remainingPercent: quota.remainingPercent,
                 normalTint: .systemPurple,
-                accessibilityText: String(
-                    format: "公司额度剩余$%.2f，剩余%d%%",
-                    quota.remainingUSD,
-                    quota.remainingPercent
-                )
+                accessibilityText: "公司额度剩余\(quota.remainingPercent)%"
             ))
         } else {
             pages.append(Self(
                 displayText: "公司 待配置",
+                detailText: nil,
                 tintColor: .systemPurple,
                 pulses: false,
-                accessibilityLabel: "恢复 AI 工作岛；公司额度待配置，请在 Edge 登录公司模型平台"
+                accessibilityLabel: "恢复 AI工作岛；公司额度待配置，请在 Edge 登录公司模型平台"
             ))
         }
         if let limit = snapshot.codexShortTermLimit {
@@ -311,6 +558,7 @@ struct DesktopFloatingButtonPresentation: Equatable {
         let isSilent = state.phase == .silence
         return Self(
             displayText: state.displayText(at: now),
+            detailText: nil,
             tintColor: isSilent ? .systemOrange : .systemRed,
             pulses: !isSilent,
             accessibilityLabel: isSilent
@@ -335,9 +583,35 @@ struct DesktopFloatingButtonPresentation: Equatable {
         }
         return Self(
             displayText: displayText,
+            detailText: nil,
             tintColor: tintColor,
             pulses: false,
-            accessibilityLabel: "恢复 AI 工作岛；\(accessibilityText)"
+            accessibilityLabel: "恢复 AI工作岛；\(accessibilityText)"
+        )
+    }
+
+    static func completion(item: WorkItem, result: String?) -> Self {
+        let detail: String
+        if let phaseCount = item.phaseCount, phaseCount > 0 {
+            let phase = item.phase?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let phase, !phase.isEmpty {
+                detail = "已完成 \(phaseCount)/\(phaseCount) · \(phase)"
+            } else {
+                detail = "已完成 \(phaseCount)/\(phaseCount) 个环节"
+            }
+        } else if let phase = item.phase?.trimmingCharacters(in: .whitespacesAndNewlines), !phase.isEmpty {
+            detail = "完成环节：\(phase)"
+        } else if let result = result?.trimmingCharacters(in: .whitespacesAndNewlines), !result.isEmpty {
+            detail = result.components(separatedBy: .newlines).first ?? "任务已完成"
+        } else {
+            detail = "任务已完成，等待查看"
+        }
+        return Self(
+            displayText: item.displayTitle,
+            detailText: detail,
+            tintColor: .systemGreen,
+            pulses: false,
+            accessibilityLabel: "AI工作岛任务已完成；\(item.displayTitle)；\(detail)"
         )
     }
 }
@@ -377,6 +651,7 @@ enum DesktopFloatingPanelTransition {
 
 enum DesktopFloatingHoverBehavior {
     static let collapseDelay: TimeInterval = 0.5
+    static let panelTravelGrace: TimeInterval = 1.2
     /// `mouseExited` can be missed by a borderless panel while AppKit changes
     /// the active responder. Reconcile against the real pointer location while
     /// the panel is hover-expanded so it cannot remain open indefinitely.
@@ -414,10 +689,15 @@ enum DesktopFloatingHoverBehavior {
     ) -> Bool {
         firedRequestID == currentRequestID
     }
+
+    static func autoCollapseDelay(expandedAt: Date?, now: Date = Date()) -> TimeInterval {
+        guard let expandedAt else { return collapseDelay }
+        return max(collapseDelay, panelTravelGrace - now.timeIntervalSince(expandedAt))
+    }
 }
 
 enum DesktopCompletionReminderBehavior {
-    static let revealDuration: TimeInterval = 4
+    static let revealDuration: TimeInterval = 6
 
     static func newlyCompletedItemIDs(
         previous: WorkStatusSnapshot?,
@@ -432,11 +712,14 @@ enum DesktopCompletionReminderBehavior {
         })
     }
 
-    static func autoCollapseDelay(
-        standardDelay: TimeInterval,
-        completionRevealRemaining: TimeInterval
-    ) -> TimeInterval {
-        max(standardDelay, completionRevealRemaining)
+
+    static func completedItem(
+        from snapshot: WorkStatusSnapshot,
+        matching itemIDs: Set<String>
+    ) -> WorkItem? {
+        snapshot.items
+            .filter { itemIDs.contains($0.id) }
+            .max { $0.updatedAt < $1.updatedAt }
     }
 }
 
@@ -460,6 +743,7 @@ struct DesktopPanelItemPresentation: Equatable {
     let phaseIndex: Int?
     let phaseCount: Int?
     let recentActivity: String?
+    let activities: [String]?
     let lastAssistantResult: String?
 
     init(_ item: WorkItem, lastAssistantResult: String? = nil) {
@@ -473,6 +757,7 @@ struct DesktopPanelItemPresentation: Equatable {
         phaseIndex = item.phaseIndex
         phaseCount = item.phaseCount
         recentActivity = item.recentActivity
+        activities = item.activities
         self.lastAssistantResult = lastAssistantResult
     }
 }
@@ -543,7 +828,8 @@ private struct WorkPanelLayout {
 @MainActor
 final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
     private static let userPanelWidthDefaultsKey = "desktopPanelUserWidth"
-    private static let userPanelHeightDefaultsKey = "desktopPanelUserHeight"
+    private static let userPanelCenterXDefaultsKey = "desktopPanelUserCenterX"
+    private static let userPanelCenterYDefaultsKey = "desktopPanelUserCenterY"
     var onItemSelected: ((WorkItem) -> Void)?
     var onItemDetailsSelected: ((WorkItem) -> Void)?
     var onItemOutputSelected: ((WorkItem) -> Void)?
@@ -562,22 +848,20 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     private let panel: NSPanel
     private let floatingPanel: NSPanel
     private let floatingButtonView = FloatingStatusButtonView()
-    private let titleLabel = NSTextField(labelWithString: "AI 工作岛")
+    private var floatingButtonWidthConstraint: NSLayoutConstraint!
+    private var floatingButtonHeightConstraint: NSLayoutConstraint!
+    private let titleLabel = NSTextField(labelWithString: "AI工作岛")
     private let statusCapsule = StatusCapsuleView()
     private let newTaskInputBackground = RoundedInputBackground()
     private let newTaskPromptField = PastedImageTextField(string: "")
     private let newTaskImageCountLabel = NSTextField(labelWithString: "")
     private let newTaskSendButton = FirstMouseButton()
     private let newTaskDirectoryButton = FirstMouseButton()
-    private let codexQuotaView = DesktopQuotaSummaryView()
-    private let companyQuotaView = DesktopQuotaSummaryView()
-    private let quotaStack = NSStackView()
+    private let quotaSummaryView = DesktopQuotaSummaryView()
     private let itemStack = NSStackView()
     private let footerLabel = NSTextField(labelWithString: "")
     private var displayedItemIDs: [String]?
     private var displayedRowCount = 0
-    private var isTransitioningItems = false
-    private var pendingSnapshot: WorkStatusSnapshot?
     private var lastStatuses: [String: WorkItemStatus] = [:]
     private var pendingSweepColors: [String: NSColor] = [:]
     private var expandedSections: Set<WorkSection> = []
@@ -592,16 +876,22 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     private var autoCollapseRequestID: UInt = 0
     private var hoverReconciliationTimer: Timer?
     private var suppressesAutoCollapseUntilPointerReentry = false
-    private var completionRevealUntil: Date?
+    private var hoverExpandedAt: Date?
+    private var pendingCompletionCollapse: DispatchWorkItem?
     private var codexResults: [String: String] = [:]
     private var codexRows: [String: WorkItemRowView] = [:]
     private var displayMode: DesktopPanelMode = .background
     private var contentMode: DesktopContentMode = .clean
     private var isSynchronizingWindowPositions = false
+    private var windowPresentationTransition = DesktopWindowPresentationTransition()
     private var isAutomaticallySizingPanel = false
-    private var hasUserPreferredPanelSize = false
+    private var hasUserPreferredPanelWidth = false
+    private var userPreferredPanelCenter: NSPoint?
     private var isPanelBeingResized = false
     private var isVisibilityRequested = false
+    /// Single source of truth for both window states. AppKit may resize or retain
+    /// the hidden window during a transition; neither state may inherit that stale frame.
+    private var sharedTopRightAnchor: NSPoint?
     private let keepsPanelExpandedForUIReview = ProcessInfo.processInfo.arguments.contains(
         "--ui-review-panel"
     )
@@ -682,11 +972,10 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         isHoverExpanded = false
         isMinimizedToFloatingButton = false
         applyDisplayMode(hoverExpanded: false)
-        if floatingPanel.isVisible {
-            alignPanelToFloatingPanel()
-        }
+        centerPanelOnActiveScreen()
         floatingPanel.orderOut(nil)
         panel.orderFrontRegardless()
+        panel.makeFirstResponder(nil)
     }
 
     func setAppearanceMode(_ mode: AppAppearanceMode) {
@@ -706,6 +995,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     func showAutoCollapsing() {
         show()
         isHoverExpanded = true
+        hoverExpandedAt = Date()
         refreshPanelHoverState()
         startHoverReconciliationIfNeeded()
         scheduleAutoCollapseIfNeeded()
@@ -718,6 +1008,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         isHoverExpanded = false
         isMinimizedToFloatingButton = true
         applyDisplayMode(hoverExpanded: false)
+        restoreCompactFloatingButton()
         positionFloatingPanelForCollapsedState()
         panel.orderOut(nil)
         floatingPanel.alphaValue = 1
@@ -730,6 +1021,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         stopHoverReconciliation()
         isHoverExpanded = false
         isMinimizedToFloatingButton = false
+        cancelCompletionCapsule()
         applyDisplayMode(hoverExpanded: false)
         panel.orderOut(nil)
         floatingPanel.orderOut(nil)
@@ -776,6 +1068,57 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     var floatingPanelIsVisibleForTesting: Bool { floatingPanel.isVisible }
     var panelLevelForTesting: NSWindow.Level { panel.level }
     var floatingPanelLevelForTesting: NSWindow.Level { floatingPanel.level }
+    var floatingPanelSizeForTesting: NSSize {
+        DesktopFloatingButtonLayout.canvasSize(for: NSSize(
+            width: floatingButtonWidthConstraint?.constant ?? DesktopFloatingButtonLayout.size.width,
+            height: floatingButtonHeightConstraint?.constant ?? DesktopFloatingButtonLayout.size.height
+        ))
+    }
+    var activityRowsFillLeadingEdgeForTesting: Bool {
+        panel.contentView?.layoutSubtreeIfNeeded()
+        return !codexRows.isEmpty
+            && codexRows.values.allSatisfy(\.activityRowsFillLeadingEdgeForTesting)
+    }
+    var floatingPanelFrameForTesting: NSRect { floatingPanel.frame }
+    var floatingPanelHasWindowShadowForTesting: Bool { floatingPanel.hasShadow }
+    var sharedAnchorForTesting: NSPoint? { sharedTopRightAnchor }
+    var userPreferredPanelCenterForTesting: NSPoint? { userPreferredPanelCenter }
+
+    func setCollapsedFrameForTesting(_ frame: NSRect) {
+        setFrame(frame, for: floatingPanel)
+        sharedTopRightAnchor = DesktopPanelAnchorLayout.anchor(fromFloatingFrame: frame)
+        didPositionFloatingPanel = true
+    }
+
+    func beginPresentationTransitionForTesting() -> UInt {
+        windowPresentationTransition.begin()
+    }
+
+    func finishPresentationTransitionForTesting(_ generation: UInt) {
+        _ = windowPresentationTransition.finish(generation)
+    }
+
+    func notifyPanelMoveForTesting(to frame: NSRect) {
+        panel.setFrame(frame, display: false)
+        windowDidMove(Notification(name: NSWindow.didMoveNotification, object: panel))
+    }
+
+    func runExpandCollapseCycleForTesting() async {
+        showCollapsed()
+        activateFloatingButton(hoverExpanded: true)
+        await waitForPresentationTransitionForTesting()
+        minimizeToFloatingButton()
+        await waitForPresentationTransitionForTesting()
+    }
+
+    private func waitForPresentationTransitionForTesting() async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(2))
+        while windowPresentationTransition.suppressesPositionSynchronization,
+              clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
 
     func orderWindowsOutForTesting() {
         panel.orderOut(nil)
@@ -783,21 +1126,22 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     }
 
     func update(snapshot: WorkStatusSnapshot) {
+        let previousSnapshot = latestSnapshot
         let newlyCompletedItemIDs = DesktopCompletionReminderBehavior.newlyCompletedItemIDs(
-            previous: latestSnapshot,
+            previous: previousSnapshot,
             current: snapshot
         )
         latestSnapshot = snapshot
         floatingButtonView.update(snapshot: snapshot)
         if !suppressesAutomaticReveals {
-            revealCompletedItemsIfNeeded(newlyCompletedItemIDs)
+            revealCompletedItemsIfNeeded(
+                newlyCompletedItemIDs,
+                previousSnapshot: previousSnapshot,
+                currentSnapshot: snapshot
+            )
         }
         captureStatusEffects(in: snapshot)
         updateQuotaViews(snapshot: snapshot)
-        if isTransitioningItems {
-            pendingSnapshot = snapshot
-            return
-        }
         let layout = panelLayout(for: snapshot)
         let visibleIDs = layout.tokens
         let contentSignature = DesktopPanelContentSignature(
@@ -808,31 +1152,31 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         guard displayedContentSignature != contentSignature else {
             return
         }
-        guard let displayedItemIDs else {
+        guard displayedItemIDs != nil else {
             self.displayedItemIDs = visibleIDs
             displayedRowCount = layout.rowCount
             displayedContentSignature = contentSignature
             apply(snapshot: snapshot, resizeImmediately: true)
             return
         }
-        guard displayedItemIDs != visibleIDs,
-              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-            self.displayedItemIDs = visibleIDs
-            displayedRowCount = layout.rowCount
-            displayedContentSignature = contentSignature
-            apply(snapshot: snapshot, resizeImmediately: true)
-            return
-        }
-        animateTransition(
-            to: snapshot,
-            visibleIDs: visibleIDs,
-            contentSignature: contentSignature,
-            newRowCount: layout.rowCount
-        )
+        self.displayedItemIDs = visibleIDs
+        displayedRowCount = layout.rowCount
+        displayedContentSignature = contentSignature
+        apply(snapshot: snapshot, resizeImmediately: true)
     }
 
     func updateRecordingGuardian(_ state: VoiceMemoGuardianState?) {
+        if state != nil {
+            pendingCompletionCollapse?.cancel()
+            pendingCompletionCollapse = nil
+            floatingButtonView.clearCompletion()
+            setFloatingContentSize(DesktopFloatingButtonLayout.size, animated: true)
+        }
         floatingButtonView.updateRecordingGuardian(state)
+    }
+
+    func updateRecordingStopInProgress(_ isInProgress: Bool) {
+        floatingButtonView.updateRecordingStopInProgress(isInProgress)
     }
 
     func updateRecordingWaveformLevel(_ level: Double) {
@@ -960,11 +1304,20 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
                     }
                     itemStack.addArrangedSubview(row)
                     row.widthAnchor.constraint(equalTo: itemStack.widthAnchor).isActive = true
+                    row.heightAnchor.constraint(equalToConstant: row.requiredHeight).isActive = true
                     if let color = pendingSweepColors.removeValue(forKey: item.id) {
                         DispatchQueue.main.async { row.playSuccessSweep(color: color) }
                     }
                 }
             }
+            // NSStackView's `.fill` distribution assigns surplus vertical room
+            // to arranged subviews. Give that room one explicit owner so task
+            // rows retain their required, content-derived heights.
+            let listSpacer = NSView()
+            listSpacer.setContentHuggingPriority(.defaultLow, for: .vertical)
+            listSpacer.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+            itemStack.addArrangedSubview(listSpacer)
+            listSpacer.widthAnchor.constraint(equalTo: itemStack.widthAnchor).isActive = true
         }
 
         footerLabel.isHidden = snapshot.automationIssues.isEmpty
@@ -980,125 +1333,33 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
                         .flatMap(\.items)
                         .filter { $0.id.hasPrefix("codex:") }
                         .count,
-                    contentMode: contentMode
+                    contentMode: contentMode,
+                    conversationExtraHeightOverride: layout.sections
+                        .flatMap(\.items)
+                        .filter { $0.id.hasPrefix("codex:") }
+                        .reduce(into: 0) { total, item in
+                            total += DesktopConversationLayout.extraHeight(
+                                item: item,
+                                lastAssistantResult: codexResults[item.id],
+                                contentMode: contentMode
+                            )
+                        }
                 ),
                 currentContentSize: panel.contentView?.bounds.size ?? panel.contentLayoutRect.size,
-                hasUserPreferredSize: hasUserPreferredPanelSize
+                hasUserPreferredSize: hasUserPreferredPanelWidth
             )
             isAutomaticallySizingPanel = true
-            panel.setContentSize(fittedContentSize)
+            if let targetFrame = panelFrameForPresentation(forContentSize: fittedContentSize) {
+                setFrame(targetFrame, for: panel)
+            } else {
+                panel.setContentSize(fittedContentSize)
+            }
             isAutomaticallySizingPanel = false
         }
     }
 
-    private func animateTransition(
-        to snapshot: WorkStatusSnapshot,
-        visibleIDs: [String],
-        contentSignature: DesktopPanelContentSignature,
-        newRowCount: Int
-    ) {
-        isTransitioningItems = true
-        let oldCount = displayedRowCount
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.10
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            itemStack.animator().alphaValue = 0
-        } completionHandler: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                displayedItemIDs = visibleIDs
-                displayedRowCount = newRowCount
-                displayedContentSignature = contentSignature
-                apply(snapshot: snapshot, resizeImmediately: false)
-                panel.contentView?.layoutSubtreeIfNeeded()
-
-            let nextLayout = panelLayout(for: snapshot)
-            let sectionCount = nextLayout.sections.count
-            let contentSize = DesktopPanelLayout.contentSize(
-                visibleItemCount: newRowCount,
-                sectionCount: sectionCount,
-                conversationItemCount: nextLayout.sections
-                    .flatMap(\.items)
-                    .filter { $0.id.hasPrefix("codex:") }
-                    .count,
-                contentMode: contentMode
-            )
-            let fittedContentSize = DesktopPanelResizePolicy.automaticallyFittedContentSize(
-                contentSize,
-                currentContentSize: panel.contentView?.bounds.size ?? panel.contentLayoutRect.size,
-                hasUserPreferredSize: hasUserPreferredPanelSize
-            )
-            let outerSize = panel.frameRect(
-                forContentRect: NSRect(origin: .zero, size: fittedContentSize)
-            ).size
-            var targetFrame = panel.frame
-            targetFrame.origin.y = panel.frame.maxY - outerSize.height
-            targetFrame.size = outerSize
-
-            itemStack.alphaValue = 0
-            itemStack.wantsLayer = true
-            let offset: CGFloat = newRowCount >= oldCount ? -10 : 10
-            let spring = CASpringAnimation(keyPath: "transform.translation.y")
-            spring.fromValue = offset
-            spring.toValue = 0
-            spring.mass = 1
-            spring.stiffness = 310
-            spring.damping = 28
-            spring.initialVelocity = 0
-            spring.duration = min(0.42, spring.settlingDuration)
-            itemStack.layer?.add(spring, forKey: "listArrival")
-
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.34
-                    context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    context.allowsImplicitAnimation = true
-                    isAutomaticallySizingPanel = true
-                    panel.animator().setFrame(targetFrame, display: true)
-                    itemStack.animator().alphaValue = 1
-                } completionHandler: { [weak self] in
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        isAutomaticallySizingPanel = false
-                        isTransitioningItems = false
-                        if let pendingSnapshot {
-                            self.pendingSnapshot = nil
-                            update(snapshot: pendingSnapshot)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     private func updateQuotaViews(snapshot: WorkStatusSnapshot) {
-        let codexLimits = [snapshot.codexShortTermLimit, snapshot.codexWeeklyLimit].compactMap { $0 }
-        let codexText = [
-            snapshot.codexShortTermLimit.map { "5时 \($0.remainingPercent)%" },
-            snapshot.codexWeeklyLimit.map { "周 \($0.remainingPercent)%" },
-        ].compactMap { $0 }.joined(separator: " · ")
-        codexQuotaView.update(
-            title: "Codex 额度",
-            value: codexText,
-            remainingPercent: codexLimits.map(\.remainingPercent).min()
-        )
-        codexQuotaView.isHidden = codexText.isEmpty
-
-        if let quota = snapshot.companyQuota {
-            companyQuotaView.update(
-                title: "公司额度",
-                value: String(format: "$%.2f · %d%%", quota.remainingUSD, quota.remainingPercent),
-                remainingPercent: quota.remainingPercent
-            )
-            companyQuotaView.isHidden = false
-        } else {
-            companyQuotaView.update(
-                title: "公司额度",
-                value: "待配置 · Edge 登录",
-                remainingPercent: nil
-            )
-            companyQuotaView.isHidden = false
-        }
-        quotaStack.isHidden = codexQuotaView.isHidden && companyQuotaView.isHidden
+        quotaSummaryView.update(DesktopQuotaPresentation.make(snapshot: snapshot))
     }
 
     private func captureStatusEffects(in snapshot: WorkStatusSnapshot) {
@@ -1170,7 +1431,9 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
 
     func windowDidMove(_ notification: Notification) {
         guard !isSynchronizingWindowPositions,
+              !windowPresentationTransition.suppressesPositionSynchronization,
               let window = notification.object as? NSWindow,
+              !(window === panel && isAutomaticallySizingPanel),
               let screen = screenMostCovered(by: window.frame) else { return }
         let contentInsets: NSEdgeInsets = window === floatingPanel
             ? NSEdgeInsets(
@@ -1189,16 +1452,24 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
             window.setFrameOrigin(snappedFrame.origin)
         }
         if window === panel {
+            sharedTopRightAnchor = DesktopPanelAnchorLayout.anchor(fromPanelFrame: panel.frame)
+            userPreferredPanelCenter = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+            persistUserPreferredPanelPosition()
             alignFloatingPanelToPanel()
+        } else if window === floatingPanel {
+            sharedTopRightAnchor = DesktopPanelAnchorLayout.anchor(fromFloatingFrame: floatingPanel.frame)
+            alignPanelToFloatingPanel()
         }
     }
 
     func windowDidResize(_ notification: Notification) {
         guard !isSynchronizingWindowPositions,
+              !windowPresentationTransition.suppressesPositionSynchronization,
               notification.object as? NSWindow === panel else { return }
+        guard !isAutomaticallySizingPanel else { return }
         alignFloatingPanelToPanel()
-        guard panel.isVisible, !isAutomaticallySizingPanel else { return }
-        hasUserPreferredPanelSize = true
+        guard panel.isVisible else { return }
+        hasUserPreferredPanelWidth = true
         if !panel.inLiveResize {
             persistUserPreferredPanelSize()
         }
@@ -1220,7 +1491,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
             frame.origin.y = panel.frame.maxY - size.height
             panel.setFrame(frame, display: true)
         }
-        hasUserPreferredPanelSize = true
+        hasUserPreferredPanelWidth = true
         persistUserPreferredPanelSize()
         alignFloatingPanelToPanel()
         refreshPanelHoverState()
@@ -1229,7 +1500,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
 
     private func configurePanel() {
         panel.delegate = self
-        panel.title = "AI 工作岛"
+        panel.title = "AI工作岛"
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
@@ -1244,6 +1515,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         panel.resizeIncrements = NSSize(width: 1, height: 1)
         panel.setFrameAutosaveName("AIWorkStatusPanelFrame")
         restoreUserPreferredPanelSize()
+        restoreUserPreferredPanelPosition()
 
         let materialView = PanelBackgroundView()
         materialView.autoresizingMask = [.width, .height]
@@ -1266,7 +1538,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         header.alignment = .centerY
         header.spacing = 8
 
-        newTaskPromptField.placeholderString = "输入新任务…"
+        newTaskPromptField.placeholderString = "新建任务…"
         newTaskPromptField.font = .systemFont(ofSize: 12)
         newTaskPromptField.isBordered = false
         newTaskPromptField.drawsBackground = false
@@ -1323,25 +1595,34 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
             newTaskControls.bottomAnchor.constraint(equalTo: newTaskInputBackground.bottomAnchor, constant: -2),
         ])
 
-        quotaStack.setViews([companyQuotaView, codexQuotaView], in: .leading)
-        quotaStack.orientation = .horizontal
-        quotaStack.alignment = .centerY
-        quotaStack.distribution = .fillEqually
-        quotaStack.spacing = 8
-        quotaStack.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        quotaSummaryView.heightAnchor.constraint(equalToConstant: 22).isActive = true
 
         itemStack.orientation = .vertical
-        itemStack.alignment = .width
+        itemStack.alignment = .leading
         itemStack.spacing = 6
         itemStack.distribution = .fill
+        // The panel may temporarily be taller than its current content (for example
+        // after restoring a user-resized window). Keep rows at their measured
+        // content height instead of letting NSStackView distribute that surplus
+        // into the cards. Any spare room belongs below the list.
+        itemStack.setHuggingPriority(.required, for: .vertical)
+        itemStack.setContentCompressionResistancePriority(.required, for: .vertical)
 
         footerLabel.font = .systemFont(ofSize: 10.5)
         footerLabel.textColor = .secondaryLabelColor
         footerLabel.lineBreakMode = .byTruncatingMiddle
 
-        let contentStack = NSStackView(views: [header, newTaskInputBackground, quotaStack, itemStack, footerLabel])
+        let contentStack = NSStackView(views: DesktopPanelLayout.sectionOrder.map { section in
+            switch section {
+            case .header: header
+            case .tasks: itemStack
+            case .newTask: newTaskInputBackground
+            case .quota: quotaSummaryView
+            case .footer: footerLabel
+            }
+        })
         contentStack.orientation = .vertical
-        contentStack.alignment = .width
+        contentStack.alignment = .leading
         contentStack.spacing = 11
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         materialView.addSubview(contentStack)
@@ -1354,7 +1635,11 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
                 equalTo: materialView.trailingAnchor,
                 constant: -DesktopPanelLayout.contentHorizontalInset
             ),
+            header.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             itemStack.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            newTaskInputBackground.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            quotaSummaryView.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
+            footerLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor),
             contentStack.topAnchor.constraint(equalTo: materialView.topAnchor, constant: 30),
             contentStack.bottomAnchor.constraint(lessThanOrEqualTo: materialView.bottomAnchor, constant: -12),
         ])
@@ -1409,7 +1694,12 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         stopHoverReconciliation()
         isHoverExpanded = false
         isMinimizedToFloatingButton = true
+        restoreCompactFloatingButton()
         positionFloatingPanelForCollapsedState()
+        floatingButtonView.suppressHoverActivationUntilPointerExit(
+            floatingPanel.frame.contains(NSEvent.mouseLocation)
+        )
+        hoverExpandedAt = nil
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard !reduceMotion else {
             panel.orderOut(nil)
@@ -1421,24 +1711,34 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         floatingPanel.alphaValue = 0
         floatingPanel.orderFrontRegardless()
         floatingButtonView.playEntrance()
+        let restingPanelFrame = panel.frame
+        let recedingPanelFrame = DesktopPanelTransitionMotion.frameTowardSource(
+            targetFrame: restingPanelFrame,
+            sourceFrame: floatingPanel.frame
+        )
+        let transitionGeneration = windowPresentationTransition.begin()
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.20
+            context.duration = 0.24
             context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
             panel.animator().alphaValue = 0
+            panel.animator().setFrame(recedingPanelFrame, display: true)
             floatingPanel.animator().alphaValue = 1
         } completionHandler: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                guard windowPresentationTransition.finish(transitionGeneration) else { return }
                 // Hover can restore the panel before this shrinking animation finishes.
                 // Do not let the stale completion hide the newly restored panel.
                 guard DesktopFloatingPanelTransition.shouldFinishMinimizing(
                     isMinimizedToFloatingButton: isMinimizedToFloatingButton
                 ) else {
                     panel.alphaValue = 1
+                    setFrame(restingPanelFrame, for: panel)
                     return
                 }
                 panel.orderOut(nil)
                 panel.alphaValue = 1
+                setFrame(restingPanelFrame, for: panel)
                 applyDisplayMode(hoverExpanded: false)
             }
         }
@@ -1452,18 +1752,24 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         floatingPanel.hidesOnDeactivate = false
         floatingPanel.isOpaque = false
         floatingPanel.backgroundColor = .clear
-        floatingPanel.hasShadow = true
+        floatingPanel.hasShadow = false
         floatingPanel.animationBehavior = .utilityWindow
         let canvas = NSView(frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.canvasSize))
         canvas.wantsLayer = true
         canvas.layer?.backgroundColor = NSColor.clear.cgColor
         floatingButtonView.translatesAutoresizingMaskIntoConstraints = false
         canvas.addSubview(floatingButtonView)
+        floatingButtonWidthConstraint = floatingButtonView.widthAnchor.constraint(
+            equalToConstant: DesktopFloatingButtonLayout.size.width
+        )
+        floatingButtonHeightConstraint = floatingButtonView.heightAnchor.constraint(
+            equalToConstant: DesktopFloatingButtonLayout.size.height
+        )
         NSLayoutConstraint.activate([
             floatingButtonView.centerXAnchor.constraint(equalTo: canvas.centerXAnchor),
             floatingButtonView.centerYAnchor.constraint(equalTo: canvas.centerYAnchor),
-            floatingButtonView.widthAnchor.constraint(equalToConstant: DesktopFloatingButtonLayout.size.width),
-            floatingButtonView.heightAnchor.constraint(equalToConstant: DesktopFloatingButtonLayout.size.height),
+            floatingButtonWidthConstraint,
+            floatingButtonHeightConstraint,
         ])
         floatingPanel.contentView = canvas
         floatingButtonView.onActivate = { [weak self] in
@@ -1479,14 +1785,18 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
             isMinimizedToFloatingButton: isMinimizedToFloatingButton,
             isFloatingPanelVisible: floatingPanel.isVisible
         ) else { return }
-        alignPanelToFloatingPanel()
+        cancelCompletionCapsule()
+        let targetPanelFrame = panelFrameForPresentation(forOuterSize: panel.frame.size) ?? panel.frame
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard !reduceMotion else {
+            setFrame(targetPanelFrame, for: panel)
             isMinimizedToFloatingButton = false
             isHoverExpanded = hoverExpanded
+            hoverExpandedAt = hoverExpanded ? Date() : nil
             applyDisplayMode(hoverExpanded: hoverExpanded)
             floatingPanel.orderOut(nil)
             panel.orderFrontRegardless()
+            panel.makeFirstResponder(nil)
             refreshPanelHoverState()
             startHoverReconciliationIfNeeded()
             return
@@ -1494,41 +1804,108 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
 
         isMinimizedToFloatingButton = false
         isHoverExpanded = hoverExpanded
+        hoverExpandedAt = hoverExpanded ? Date() : nil
         applyDisplayMode(hoverExpanded: hoverExpanded)
+        setFrame(
+            DesktopPanelTransitionMotion.frameTowardSource(
+                targetFrame: targetPanelFrame,
+                sourceFrame: floatingPanel.frame
+            ),
+            for: panel
+        )
         panel.alphaValue = 0
         panel.orderFrontRegardless()
+        panel.makeFirstResponder(nil)
         refreshPanelHoverState()
         startHoverReconciliationIfNeeded()
         floatingButtonView.playExit()
+        let transitionGeneration = windowPresentationTransition.begin()
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.24
+            context.duration = 0.30
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
+            panel.animator().setFrame(targetPanelFrame, display: true)
             floatingPanel.animator().alphaValue = 0
         } completionHandler: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                guard windowPresentationTransition.finish(transitionGeneration) else { return }
                 floatingPanel.orderOut(nil)
                 floatingPanel.alphaValue = 1
             }
         }
     }
 
-    private func revealCompletedItemsIfNeeded(_ itemIDs: Set<String>) {
-        guard !itemIDs.isEmpty, isMinimizedToFloatingButton else { return }
-        completionRevealUntil = Date().addingTimeInterval(
-            DesktopCompletionReminderBehavior.revealDuration
+    private func revealCompletedItemsIfNeeded(
+        _ itemIDs: Set<String>,
+        previousSnapshot: WorkStatusSnapshot?,
+        currentSnapshot: WorkStatusSnapshot
+    ) {
+        guard isMinimizedToFloatingButton,
+              let completedItem = DesktopCompletionReminderBehavior.completedItem(
+                from: currentSnapshot,
+                matching: itemIDs
+              ) else { return }
+        let priorItem = previousSnapshot?.items.first { $0.id == completedItem.id }
+        floatingButtonView.showCompletion(
+            item: priorItem ?? completedItem,
+            result: codexResults[completedItem.id]
         )
-        activateFloatingButton(hoverExpanded: true)
-        scheduleAutoCollapseIfNeeded()
+        setFloatingContentSize(DesktopFloatingButtonLayout.completionSize, animated: true)
+        floatingPanel.orderFrontRegardless()
+
+        pendingCompletionCollapse?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.restoreCompactFloatingButton()
+        }
+        pendingCompletionCollapse = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + DesktopCompletionReminderBehavior.revealDuration,
+            execute: workItem
+        )
+    }
+
+    private func cancelCompletionCapsule() {
+        pendingCompletionCollapse?.cancel()
+        pendingCompletionCollapse = nil
+        floatingButtonView.clearCompletion()
+    }
+
+    private func restoreCompactFloatingButton() {
+        cancelCompletionCapsule()
+        setFloatingContentSize(DesktopFloatingButtonLayout.size, animated: true)
+    }
+
+    private func setFloatingContentSize(_ contentSize: NSSize, animated: Bool = false) {
+        guard floatingButtonWidthConstraint != nil, floatingButtonHeightConstraint != nil else { return }
+        let canvasSize = DesktopFloatingButtonLayout.canvasSize(for: contentSize)
+        guard floatingPanel.frame.size != canvasSize else { return }
+        let anchor = sharedTopRightAnchor
+            ?? DesktopPanelAnchorLayout.anchor(fromFloatingFrame: floatingPanel.frame)
+        sharedTopRightAnchor = anchor
+        floatingButtonWidthConstraint.constant = contentSize.width
+        floatingButtonHeightConstraint.constant = contentSize.height
+        let targetFrame = DesktopPanelAnchorLayout.floatingFrame(
+            anchoredTo: anchor,
+            floatingSize: canvasSize
+        )
+        if animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.28
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                floatingPanel.animator().setFrame(targetFrame, display: true)
+                floatingPanel.contentView?.animator().layoutSubtreeIfNeeded()
+            }
+        } else {
+            setFrame(targetFrame, for: floatingPanel)
+            floatingPanel.contentView?.layoutSubtreeIfNeeded()
+        }
     }
 
     private func setPanelHovering(_ isHovering: Bool) {
         isPanelHovered = isHovering
         if isHovering {
-            if !isTransitioningItems {
-                suppressesAutoCollapseUntilPointerReentry = false
-            }
+            suppressesAutoCollapseUntilPointerReentry = false
             cancelPendingAutoCollapse()
             return
         }
@@ -1593,15 +1970,10 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
             minimizeToFloatingButton()
         }
         pendingAutoCollapse = workItem
-        let completionRevealRemaining = completionRevealUntil.map {
-            max(0, $0.timeIntervalSinceNow)
-        } ?? 0
-        let delay = DesktopCompletionReminderBehavior.autoCollapseDelay(
-            standardDelay: DesktopFloatingHoverBehavior.collapseDelay,
-            completionRevealRemaining: completionRevealRemaining
-        )
         DispatchQueue.main.asyncAfter(
-            deadline: .now() + delay,
+            deadline: .now() + DesktopFloatingHoverBehavior.autoCollapseDelay(
+                expandedAt: hoverExpandedAt
+            ),
             execute: workItem
         )
     }
@@ -1615,34 +1987,51 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     private func restoreUserPreferredPanelSize() {
         let defaults = UserDefaults.standard
         let width = defaults.double(forKey: Self.userPanelWidthDefaultsKey)
-        let height = defaults.double(forKey: Self.userPanelHeightDefaultsKey)
-        guard width > 0, height > 0 else { return }
+        guard width > 0 else { return }
         let size = DesktopPanelResizePolicy.clampedFrameSize(
-            NSSize(width: width, height: height)
+            NSSize(width: width, height: panel.frame.height)
         )
         var frame = panel.frame
-        frame.size = size
+        frame.size.width = size.width
         panel.setFrame(frame, display: false)
-        hasUserPreferredPanelSize = true
+        hasUserPreferredPanelWidth = true
     }
 
     private func persistUserPreferredPanelSize() {
         let size = DesktopPanelResizePolicy.clampedFrameSize(panel.frame.size)
         UserDefaults.standard.set(size.width, forKey: Self.userPanelWidthDefaultsKey)
-        UserDefaults.standard.set(size.height, forKey: Self.userPanelHeightDefaultsKey)
+    }
+
+    private func restoreUserPreferredPanelPosition() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: Self.userPanelCenterXDefaultsKey) != nil,
+              defaults.object(forKey: Self.userPanelCenterYDefaultsKey) != nil else { return }
+        userPreferredPanelCenter = NSPoint(
+            x: defaults.double(forKey: Self.userPanelCenterXDefaultsKey),
+            y: defaults.double(forKey: Self.userPanelCenterYDefaultsKey)
+        )
+    }
+
+    private func persistUserPreferredPanelPosition() {
+        guard let userPreferredPanelCenter else { return }
+        let defaults = UserDefaults.standard
+        defaults.set(userPreferredPanelCenter.x, forKey: Self.userPanelCenterXDefaultsKey)
+        defaults.set(userPreferredPanelCenter.y, forKey: Self.userPanelCenterYDefaultsKey)
     }
 
     private func positionFloatingPanelForCollapsedState() {
         guard !didPositionFloatingPanel else {
-            alignFloatingPanelToPanel()
             return
         }
         let size = DesktopFloatingButtonLayout.canvasSize
         if panel.frame.origin != .zero {
-            floatingPanel.setFrameOrigin(NSPoint(
-                x: panel.frame.maxX - size.width,
-                y: panel.frame.maxY - size.height
-            ))
+            floatingPanel.setFrame(
+                DesktopPanelAnchorLayout.floatingFrame(
+                    anchoredToPanel: panel.frame,
+                    floatingSize: size
+                ),
+                display: false
+            )
         } else if let screen = NSScreen.screens.first(where: {
             $0.frame.contains(NSEvent.mouseLocation)
         }) ?? NSScreen.main {
@@ -1662,23 +2051,71 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
             floatingPanel.setFrameOrigin(visibleFrame.origin)
         }
         didPositionFloatingPanel = true
-        alignPanelToFloatingPanel()
+    }
+
+    private func centerPanelOnActiveScreen() {
+        guard let frame = panelFrameForPresentation(forOuterSize: panel.frame.size) else { return }
+        setFrame(frame, for: panel)
+    }
+
+    private func panelFrameForPresentation(forContentSize contentSize: NSSize) -> NSRect? {
+        let outerSize = panel.frameRect(
+            forContentRect: NSRect(origin: .zero, size: contentSize)
+        ).size
+        return panelFrameForPresentation(forOuterSize: outerSize)
+    }
+
+    private func panelFrameForPresentation(forOuterSize outerSize: NSSize) -> NSRect? {
+        guard let userPreferredPanelCenter else {
+            return centeredPanelFrame(forOuterSize: outerSize)
+        }
+        let fallbackScreen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? NSScreen.main
+        guard let fallbackVisibleFrame = fallbackScreen?.visibleFrame else { return nil }
+        return DesktopPanelRememberedPosition.restoredFrame(
+            panelSize: outerSize,
+            center: userPreferredPanelCenter,
+            visibleFrames: NSScreen.screens.map(\.visibleFrame),
+            fallbackVisibleFrame: fallbackVisibleFrame
+        )
+    }
+
+    private func centeredPanelFrame(forContentSize contentSize: NSSize) -> NSRect? {
+        let outerSize = panel.frameRect(
+            forContentRect: NSRect(origin: .zero, size: contentSize)
+        ).size
+        return centeredPanelFrame(forOuterSize: outerSize)
+    }
+
+    private func centeredPanelFrame(forOuterSize outerSize: NSSize) -> NSRect? {
+        let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) }
+            ?? screenMostCovered(by: panel.frame)
+            ?? screenMostCovered(by: floatingPanel.frame)
+            ?? NSScreen.main
+        guard let screen else { return nil }
+        return DesktopPanelCenterLayout.centeredFrame(
+            panelSize: outerSize,
+            in: screen.visibleFrame
+        )
     }
 
     private func alignPanelToFloatingPanel() {
+        let anchor = sharedTopRightAnchor
+            ?? DesktopPanelAnchorLayout.anchor(fromFloatingFrame: floatingPanel.frame)
+        sharedTopRightAnchor = anchor
         setFrame(
-            DesktopPanelAnchorLayout.panelFrame(
-                anchoredToFloatingPanel: floatingPanel.frame,
-                panelSize: panel.frame.size
-            ),
+            DesktopPanelAnchorLayout.panelFrame(anchoredTo: anchor, panelSize: panel.frame.size),
             for: panel
         )
     }
 
     private func alignFloatingPanelToPanel() {
+        let anchor = sharedTopRightAnchor
+            ?? DesktopPanelAnchorLayout.anchor(fromPanelFrame: panel.frame)
+        sharedTopRightAnchor = anchor
         setFrame(
             DesktopPanelAnchorLayout.floatingFrame(
-                anchoredToPanel: panel.frame,
+                anchoredTo: anchor,
                 floatingSize: DesktopFloatingButtonLayout.canvasSize
             ),
             for: floatingPanel
@@ -1785,7 +2222,7 @@ final class RecordingWaveformView: NSView {
 }
 
 @MainActor
-final class FloatingStatusButtonView: NSVisualEffectView {
+final class FloatingStatusButtonView: NSView {
     var onActivate: (() -> Void)?
     var onHoverEntered: (() -> Void)?
     var onStopRecording: (() -> Void)?
@@ -1794,7 +2231,10 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     private let statusHalo = NSView()
     private let recordingWaveform = RecordingWaveformView()
     private let statusLabel = NSTextField(labelWithString: "空闲")
+    private let detailLabel = NSTextField(labelWithString: "")
     private let stopRecordingButton = NSButton()
+    private var normalStatusCenterConstraint: NSLayoutConstraint?
+    private var completionStatusTopConstraint: NSLayoutConstraint?
     private var normalStatusLabelTrailingConstraint: NSLayoutConstraint?
     private var recordingStatusLabelTrailingConstraint: NSLayoutConstraint?
     private let ambientLayer = CAGradientLayer()
@@ -1814,13 +2254,13 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     private var carouselIndex = 0
     private var carouselTimer: Timer?
     private var recordingGuardianState: VoiceMemoGuardianState?
+    private var completionPresentation: DesktopFloatingButtonPresentation?
+    private var isRecordingStopInProgress = false
     private var isHovering = false
+    private var suppressesHoverActivationUntilExit = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        material = .popover
-        blendingMode = .withinWindow
-        state = .active
         alphaValue = 0.96
         wantsLayer = true
         layer?.cornerRadius = DesktopFloatingButtonLayout.cornerRadius
@@ -1886,6 +2326,13 @@ final class FloatingStatusButtonView: NSVisualEffectView {
         statusLabel.maximumNumberOfLines = 1
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(statusLabel)
+        detailLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.maximumNumberOfLines = 1
+        detailLabel.isHidden = true
+        detailLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(detailLabel)
         stopRecordingButton.bezelStyle = .inline
         stopRecordingButton.isBordered = false
         stopRecordingButton.image = NSImage(systemSymbolName: "stop.fill", accessibilityDescription: "停止录音")
@@ -1905,6 +2352,15 @@ final class FloatingStatusButtonView: NSVisualEffectView {
             constant: -2
         )
         recordingStatusLabelTrailingConstraint?.isActive = false
+        normalStatusCenterConstraint = statusLabel.centerYAnchor.constraint(
+            equalTo: centerYAnchor,
+            constant: -0.5
+        )
+        completionStatusTopConstraint = statusLabel.topAnchor.constraint(
+            equalTo: topAnchor,
+            constant: 15
+        )
+        completionStatusTopConstraint?.isActive = false
         NSLayoutConstraint.activate([
             statusHalo.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
             statusHalo.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -1919,8 +2375,11 @@ final class FloatingStatusButtonView: NSVisualEffectView {
             recordingWaveform.topAnchor.constraint(equalTo: statusHalo.topAnchor, constant: 1),
             recordingWaveform.bottomAnchor.constraint(equalTo: statusHalo.bottomAnchor, constant: -1),
             statusLabel.leadingAnchor.constraint(equalTo: statusHalo.trailingAnchor, constant: 4),
-            statusLabel.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -0.5),
+            normalStatusCenterConstraint!,
             normalStatusLabelTrailingConstraint!,
+            detailLabel.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
+            detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -14),
+            detailLabel.topAnchor.constraint(equalTo: statusLabel.bottomAnchor, constant: 5),
             stopRecordingButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             stopRecordingButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             stopRecordingButton.widthAnchor.constraint(equalToConstant: 18),
@@ -1946,6 +2405,7 @@ final class FloatingStatusButtonView: NSVisualEffectView {
         layer?.backgroundColor = (isDark ? NSColor.black : NSColor.white)
             .withAlphaComponent(isDark ? 0.52 : 0.78).cgColor
         statusLabel.textColor = .labelColor
+        detailLabel.textColor = .secondaryLabelColor
     }
 
     override func viewDidMoveToWindow() {
@@ -1968,14 +2428,16 @@ final class FloatingStatusButtonView: NSVisualEffectView {
 
     override func layout() {
         super.layout()
+        let cornerRadius = bounds.height / 2
+        layer?.cornerRadius = cornerRadius
         glassHighlightLayer.frame = bounds
         ambientLayer.frame = CGRect(x: -bounds.width, y: 0, width: bounds.width * 2, height: bounds.height)
         borderContainerLayer.frame = bounds
         borderMaskLayer.frame = bounds
         borderMaskLayer.path = CGPath(
             roundedRect: bounds.insetBy(dx: 0.8, dy: 0.8),
-            cornerWidth: DesktopFloatingButtonLayout.cornerRadius - 0.8,
-            cornerHeight: DesktopFloatingButtonLayout.cornerRadius - 0.8,
+            cornerWidth: cornerRadius - 0.8,
+            cornerHeight: cornerRadius - 0.8,
             transform: nil
         )
         let gradientSide = hypot(bounds.width, bounds.height)
@@ -2002,12 +2464,37 @@ final class FloatingStatusButtonView: NSVisualEffectView {
             carouselIndex = 0
         }
         carouselPresentations = nextPresentations
-        guard recordingGuardianState == nil else { return }
+        guard recordingGuardianState == nil, completionPresentation == nil else { return }
         apply(nextPresentations[carouselIndex], isCarouselAdvance: false)
+    }
+
+    func showCompletion(item: WorkItem, result: String?) {
+        let presentation = DesktopFloatingButtonPresentation.completion(item: item, result: result)
+        completionPresentation = presentation
+        normalStatusCenterConstraint?.isActive = false
+        completionStatusTopConstraint?.isActive = true
+        detailLabel.isHidden = false
+        apply(presentation, isCarouselAdvance: false)
+    }
+
+    func clearCompletion() {
+        guard completionPresentation != nil else { return }
+        completionPresentation = nil
+        completionStatusTopConstraint?.isActive = false
+        normalStatusCenterConstraint?.isActive = true
+        detailLabel.isHidden = true
+        detailLabel.stringValue = ""
+        if recordingGuardianState == nil, !carouselPresentations.isEmpty {
+            carouselIndex = min(carouselIndex, carouselPresentations.count - 1)
+            apply(carouselPresentations[carouselIndex], isCarouselAdvance: false)
+        }
     }
 
     func updateRecordingGuardian(_ state: VoiceMemoGuardianState?) {
         recordingGuardianState = state
+        if state == nil {
+            isRecordingStopInProgress = false
+        }
         stopRecordingButton.isHidden = state == nil
         normalStatusLabelTrailingConstraint?.isActive = state == nil
         recordingStatusLabelTrailingConstraint?.isActive = state != nil
@@ -2025,6 +2512,28 @@ final class FloatingStatusButtonView: NSVisualEffectView {
             statusDot.isHidden = false
             carouselIndex = min(carouselIndex, carouselPresentations.count - 1)
             apply(carouselPresentations[carouselIndex], isCarouselAdvance: false)
+        }
+    }
+
+    func updateRecordingStopInProgress(_ isInProgress: Bool) {
+        guard recordingGuardianState != nil else { return }
+        isRecordingStopInProgress = isInProgress
+        stopRecordingButton.isEnabled = !isInProgress
+        stopRecordingButton.image = NSImage(
+            systemSymbolName: isInProgress ? "hourglass" : "stop.fill",
+            accessibilityDescription: isInProgress ? "正在结束录音" : "停止录音"
+        )
+        stopRecordingButton.contentTintColor = isInProgress ? .secondaryLabelColor : .systemRed
+        stopRecordingButton.toolTip = isInProgress ? "正在结束录音…" : "停止录音并保留"
+        if isInProgress {
+            statusLabel.stringValue = "正在结束…"
+            recordingWaveform.update(level: 0, tintColor: .secondaryLabelColor)
+        } else if let recordingGuardianState {
+            apply(.recordingGuardian(recordingGuardianState), isCarouselAdvance: false)
+            recordingWaveform.update(
+                level: recordingGuardianState.phase == .silence ? 0 : 0.12,
+                tintColor: recordingGuardianState.phase == .silence ? .systemOrange : .systemRed
+            )
         }
     }
 
@@ -2049,6 +2558,10 @@ final class FloatingStatusButtonView: NSVisualEffectView {
         !stopRecordingButton.isHidden
     }
 
+    func isRecordingStopInProgressForTesting() -> Bool {
+        isRecordingStopInProgress && !stopRecordingButton.isEnabled
+    }
+
     func stopRecordingForTesting() {
         stopRecording()
     }
@@ -2068,6 +2581,7 @@ final class FloatingStatusButtonView: NSVisualEffectView {
             apply(.recordingGuardian(recordingGuardianState), isCarouselAdvance: false)
             return
         }
+        guard completionPresentation == nil else { return }
         guard carouselPresentations.count > 1 else { return }
         carouselIndex = (carouselIndex + 1) % carouselPresentations.count
         apply(carouselPresentations[carouselIndex], isCarouselAdvance: true)
@@ -2075,6 +2589,14 @@ final class FloatingStatusButtonView: NSVisualEffectView {
 
     func displayedTextForTesting() -> String {
         statusLabel.stringValue
+    }
+
+    func displayedDetailForTesting() -> String {
+        detailLabel.stringValue
+    }
+
+    func isCompletionVisibleForTesting() -> Bool {
+        completionPresentation != nil && !detailLabel.isHidden
     }
 
     func statusLabelHasEnoughWidthForTesting() -> Bool {
@@ -2103,6 +2625,7 @@ final class FloatingStatusButtonView: NSVisualEffectView {
         }
         currentTintColor = presentation.tintColor
         statusLabel.stringValue = presentation.displayText
+        detailLabel.stringValue = presentation.detailText ?? ""
         statusDot.layer?.backgroundColor = presentation.tintColor.cgColor
         statusDot.layer?.shadowColor = presentation.tintColor.cgColor
         statusDot.layer?.shadowOpacity = 0.55
@@ -2319,12 +2842,22 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     }
 
     func handleHoverEntered() {
-        if recordingGuardianState == nil { onHoverEntered?() }
+        guard !suppressesHoverActivationUntilExit, recordingGuardianState == nil else { return }
+        onHoverEntered?()
     }
 
     override func mouseExited(with event: NSEvent) {
         NSCursor.pop()
         setHovering(false)
+        suppressesHoverActivationUntilExit = false
+    }
+
+    func suppressHoverActivationUntilPointerExit(_ suppress: Bool) {
+        suppressesHoverActivationUntilExit = suppress
+    }
+
+    func pointerExitForTesting() {
+        suppressesHoverActivationUntilExit = false
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -2365,6 +2898,8 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     }
 
     @objc private func stopRecording() {
+        guard !isRecordingStopInProgress else { return }
+        updateRecordingStopInProgress(true)
         onStopRecording?()
     }
 
@@ -2414,11 +2949,14 @@ private final class WorkSectionHeaderView: NSView {
         )
         button.isBordered = false
         button.isEnabled = collapsible
-        button.font = .systemFont(ofSize: 10, weight: .semibold)
+        button.font = .systemFont(ofSize: DesktopPanelTypography.sectionFontSize, weight: .semibold)
         button.contentTintColor = .secondaryLabelColor
         button.alignment = .left
         let countLabel = NSTextField(labelWithString: "\(count)")
-        countLabel.font = .monospacedDigitSystemFont(ofSize: 9, weight: .medium)
+        countLabel.font = .monospacedDigitSystemFont(
+            ofSize: DesktopPanelTypography.sectionFontSize,
+            weight: .medium
+        )
         countLabel.textColor = .tertiaryLabelColor
         var views: [NSView] = [button, NSView(), countLabel]
         if let actionTitle {
@@ -2428,7 +2966,10 @@ private final class WorkSectionHeaderView: NSView {
                 action: #selector(runAction)
             )
             actionButton.isBordered = false
-            actionButton.font = .systemFont(ofSize: 9, weight: .medium)
+            actionButton.font = .systemFont(
+                ofSize: DesktopPanelTypography.sectionFontSize,
+                weight: .medium
+            )
             actionButton.contentTintColor = .controlAccentColor
             actionButton.toolTip = "将所有已完成的 Codex 结果标记为已阅"
             views.append(actionButton)
@@ -2454,60 +2995,48 @@ private final class WorkSectionHeaderView: NSView {
 
 @MainActor
 private final class DesktopQuotaSummaryView: NSView {
-    private let titleLabel = NSTextField(labelWithString: "")
-    private let valueLabel = NSTextField(labelWithString: "")
-    private var displayedTitle = ""
-    private var displayedValue = ""
+    private let label = NSTextField(labelWithString: "")
+    private var displayedText = ""
     private var displayedPercent: Int?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
 
-        titleLabel.font = .systemFont(ofSize: 10, weight: .medium)
-        titleLabel.textColor = .secondaryLabelColor
-        titleLabel.lineBreakMode = .byTruncatingTail
-        valueLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
-        valueLabel.alignment = .right
-        valueLabel.lineBreakMode = .byTruncatingTail
-
-        let stack = NSStackView(views: [titleLabel, NSView(), valueLabel])
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 6
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
+        label.font = .systemFont(ofSize: DesktopPanelTypography.metadataFontSize, weight: .medium)
+        label.textColor = .tertiaryLabelColor
+        label.alignment = .left
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 9),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -9),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { nil }
 
-    func update(title: String, value: String, remainingPercent: Int?) {
-        guard displayedTitle != title
-                || displayedValue != value
-                || displayedPercent != remainingPercent else {
+    func update(_ presentation: DesktopQuotaPresentation) {
+        guard displayedText != presentation.text
+                || displayedPercent != presentation.lowestRemainingPercent else {
             return
         }
-        displayedTitle = title
-        displayedValue = value
-        displayedPercent = remainingPercent
-        titleLabel.stringValue = title
-        valueLabel.stringValue = value
+        displayedText = presentation.text
+        displayedPercent = presentation.lowestRemainingPercent
+        label.stringValue = presentation.text
 
-        if let remainingPercent, remainingPercent <= 20 {
-            valueLabel.textColor = .systemRed
-        } else if let remainingPercent, remainingPercent < 50 {
-            valueLabel.textColor = .systemOrange
+        if let percent = presentation.lowestRemainingPercent, percent <= 20 {
+            label.textColor = .systemRed
+        } else if let percent = presentation.lowestRemainingPercent, percent < 50 {
+            label.textColor = .systemOrange
         } else {
-            valueLabel.textColor = remainingPercent == nil ? .tertiaryLabelColor : .labelColor
+            label.textColor = .tertiaryLabelColor
         }
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
-        setAccessibilityLabel("\(title)：\(value)")
+        setAccessibilityLabel("额度：\(presentation.text)")
     }
 }
 
@@ -2522,7 +3051,7 @@ private final class StatusCapsuleView: NSView {
         layer?.cornerRadius = 11
         layer?.cornerCurve = .continuous
         layer?.borderWidth = 0.5
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.30).cgColor
+        updateAppearance()
         label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
         label.alignment = .center
         label.translatesAutoresizingMaskIntoConstraints = false
@@ -2536,6 +3065,17 @@ private final class StatusCapsuleView: NSView {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
+    }
+
+    private func updateAppearance() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        layer?.borderColor = (isDark ? NSColor.white : NSColor.black)
+            .withAlphaComponent(isDark ? 0.30 : 0.10).cgColor
+    }
 
     func update(text: String, color: NSColor) {
         guard currentText != text else { return }
@@ -2560,12 +3100,56 @@ private final class StatusCapsuleView: NSView {
 }
 
 @MainActor
+private final class CodexActivityRowView: NSView {
+    init(text: String, isCurrent: Bool, isResult: Bool, maximumLineCount: Int) {
+        super.init(frame: .zero)
+
+        let marker = NSView()
+        marker.wantsLayer = true
+        marker.layer?.cornerRadius = isCurrent ? 1 : 2
+        marker.layer?.backgroundColor = (
+            isResult ? NSColor.systemGreen : (isCurrent ? .controlAccentColor : .tertiaryLabelColor)
+        ).withAlphaComponent(isCurrent || isResult ? 0.9 : 0.55).cgColor
+        marker.translatesAutoresizingMaskIntoConstraints = false
+
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = .systemFont(ofSize: 12.5, weight: isCurrent ? .medium : .regular)
+        label.textColor = isResult || isCurrent ? .labelColor : .secondaryLabelColor
+        label.alignment = DesktopPanelTypography.activityAlignment
+        label.maximumNumberOfLines = maximumLineCount
+        label.lineBreakMode = DesktopConversationLayout.activityLineBreakMode
+        label.cell?.wraps = true
+        label.cell?.usesSingleLineMode = false
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(marker)
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            marker.leadingAnchor.constraint(equalTo: leadingAnchor, constant: isCurrent ? 1 : 3),
+            marker.topAnchor.constraint(equalTo: topAnchor, constant: isCurrent ? 2 : 7),
+            marker.widthAnchor.constraint(equalToConstant: isCurrent ? 2 : 4),
+            marker.heightAnchor.constraint(equalToConstant: isCurrent ? 15 : 4),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 13),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor),
+            label.topAnchor.constraint(equalTo: topAnchor),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { nil }
+}
+
+@MainActor
 private final class WorkItemRowView: NSView, NSTextFieldDelegate {
     var onSelected: (() -> Void)?
     var onDetailsSelected: (() -> Void)?
     var onPromptSubmitted: ((CodexPrompt) -> Void)?
     var onCodexTransferSelected: (() -> Void)? {
-        didSet { codexTransferButton.isHidden = onCodexTransferSelected == nil }
+        didSet {
+            codexTransferButton.isHidden = onCodexTransferSelected == nil
+                || showsPersistentPrimaryAction
+        }
     }
     var onAcknowledgeSelected: (() -> Void)? {
         didSet { acknowledgeButton.isHidden = onAcknowledgeSelected == nil }
@@ -2575,6 +3159,7 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
     }
 
     private let actions = NSStackView()
+    private let primaryActionButton = FirstMouseButton()
     private let outputButton = FirstMouseButton()
     private let codexTransferButton = FirstMouseButton()
     private let acknowledgeButton = FirstMouseButton()
@@ -2582,11 +3167,18 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
     private let promptField = PastedImageTextField(string: "")
     private let imageCountLabel = NSTextField(labelWithString: "")
     private let sendButton = FirstMouseButton()
-    private let conversationStatusLabel = NSTextField(labelWithString: "")
+    private let activityTimeline = NSStackView()
     private var tracking: NSTrackingArea?
     private var isHovering = false
     private let opensThreadWhenPromptIsEmpty: Bool
     private let contentMode: DesktopContentMode
+    private let showsPersistentPrimaryAction: Bool
+    private let cardHeight: CGFloat
+    var requiredHeight: CGFloat { cardHeight }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: cardHeight)
+    }
 
     init(
         item: WorkItem,
@@ -2594,15 +3186,21 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
         contentMode: DesktopContentMode = .clean
     ) {
         self.contentMode = contentMode
+        cardHeight = DesktopConversationLayout.cardHeight(
+            item: item,
+            lastAssistantResult: lastAssistantResult,
+            contentMode: contentMode
+        )
         opensThreadWhenPromptIsEmpty = CodexCardPrimaryActionPolicy
             .opensThreadWhenPromptIsEmpty(status: item.status)
+        showsPersistentPrimaryAction = WorkItemCardActionPolicy
+            .showsPersistentPrimaryAction(status: item.status)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 14
         layer?.cornerCurve = .continuous
         layer?.borderWidth = 0.5
-        layer?.borderColor = DesktopPanelPalette.stroke.withAlphaComponent(0.88).cgColor
-        layer?.backgroundColor = DesktopPanelPalette.card.withAlphaComponent(0.98).cgColor
+        updateAppearance()
         layer?.masksToBounds = true
 
         let indicator = NSView()
@@ -2616,17 +3214,14 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
         ])
 
         let title = NSTextField(labelWithString: item.displayTitle)
-        title.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        title.font = .systemFont(ofSize: 14, weight: .semibold)
         title.lineBreakMode = .byTruncatingTail
         title.maximumNumberOfLines = 1
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let detailText = contentMode == .detailed
-            ? item.displayDetail
-            : item.phase.map { "正在：\($0) · \(item.displayDetail)" } ?? item.displayDetail
-        let detail = NSTextField(labelWithString: detailText)
-        detail.font = .systemFont(ofSize: 11.5)
-        detail.textColor = .secondaryLabelColor
+        let detail = NSTextField(labelWithString: item.displayDetail)
+        detail.font = .systemFont(ofSize: DesktopPanelTypography.metadataFontSize, weight: .medium)
+        detail.textColor = .tertiaryLabelColor
         detail.lineBreakMode = .byTruncatingMiddle
         detail.maximumNumberOfLines = 1
         detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -2634,20 +3229,14 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
         let textStack = NSStackView(views: [title, detail])
         textStack.orientation = .vertical
         textStack.alignment = .leading
-        textStack.spacing = 2
+        textStack.spacing = 1
         textStack.setHuggingPriority(.defaultLow, for: .horizontal)
         textStack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        let status = NSTextField(labelWithString: item.status.chineseTitle)
-        status.font = .systemFont(ofSize: 10.5, weight: .semibold)
-        status.textColor = contentMode == .detailed ? .labelColor : item.status.color
-        status.alignment = .right
-        status.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         // The card is visually one click target, but AppKit label/stack views
         // consume mouse events instead of bubbling them to WorkItemRowView.
         // Route every non-interactive part through the same selection action.
-        [indicator, textStack, status].forEach {
+        [indicator, textStack].forEach {
             $0.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(selectRow)))
         }
 
@@ -2689,44 +3278,46 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
         actions.isHidden = true
         actions.setContentCompressionResistancePriority(.required, for: .horizontal)
 
-        let mainRow = NSStackView(views: [indicator, textStack, NSView(), status, actions])
+        primaryActionButton.title = "继续处理"
+        primaryActionButton.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        primaryActionButton.bezelStyle = .inline
+        primaryActionButton.controlSize = .small
+        primaryActionButton.target = self
+        primaryActionButton.action = #selector(selectRow)
+        primaryActionButton.toolTip = "查看结果并继续处理"
+        primaryActionButton.setAccessibilityLabel("查看结果并继续处理")
+        primaryActionButton.isHidden = !showsPersistentPrimaryAction
+        primaryActionButton.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let mainRow = NSStackView(views: [indicator, textStack, NSView(), primaryActionButton, actions])
         mainRow.orientation = .horizontal
         mainRow.alignment = .centerY
         mainRow.spacing = 8
         mainRow.translatesAutoresizingMaskIntoConstraints = false
 
         if item.id.hasPrefix("codex:") {
-            let summary: CodexCardStatusSummary
-            if item.status == .running {
-                summary = .running(
-                    phase: item.phase,
-                    completedSteps: item.phaseIndex,
-                    totalSteps: item.phaseCount,
-                    recentActivity: item.recentActivity
+            let summary = DesktopConversationLayout.summary(
+                item: item,
+                lastAssistantResult: lastAssistantResult,
+                contentMode: contentMode
+            )
+            activityTimeline.orientation = .vertical
+            activityTimeline.alignment = .leading
+            activityTimeline.spacing = 6
+            for (index, entry) in summary.entries.enumerated() {
+                let row = CodexActivityRowView(
+                    text: entry,
+                    isCurrent: item.status == .running && index == summary.entries.count - 1,
+                    isResult: item.status != .running,
+                    maximumLineCount: item.status == .running
+                        ? 3
+                        : (contentMode == .clean ? 4 : 8)
                 )
-            } else {
-                summary = .waiting(lastAssistantResult: lastAssistantResult)
+                activityTimeline.addArrangedSubview(row)
+                row.widthAnchor.constraint(equalTo: activityTimeline.widthAnchor).isActive = true
+                row.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(selectRow)))
             }
-            let conversationStatusText = contentMode == .detailed ? summary.detailedText : summary.text
-            conversationStatusLabel.stringValue = conversationStatusText
-            conversationStatusLabel.font = .systemFont(
-                ofSize: contentMode.conversationStatusFontSize,
-                weight: contentMode == .detailed ? .medium : .regular
-            )
-            conversationStatusLabel.textColor = contentMode.conversationStatusTextColor(isBusy: false)
-            conversationStatusLabel.lineBreakMode = .byTruncatingTail
-            conversationStatusLabel.maximumNumberOfLines = contentMode.conversationStatusLineCount
-            conversationStatusLabel.cell?.wraps = true
-            conversationStatusLabel.toolTip = conversationStatusText
-            conversationStatusLabel.setContentCompressionResistancePriority(
-                .defaultLow,
-                for: .horizontal
-            )
-            conversationStatusLabel.addGestureRecognizer(
-                NSClickGestureRecognizer(target: self, action: #selector(selectRow))
-            )
-
-            promptField.placeholderString = "继续该项目…"
+            promptField.placeholderString = "直接回复…"
             promptField.font = .systemFont(ofSize: 12)
             promptField.isBordered = false
             promptField.drawsBackground = false
@@ -2746,7 +3337,7 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
 
             sendButton.image = NSImage(
                 systemSymbolName: "arrow.up.circle.fill",
-                accessibilityDescription: "继续该项目"
+                accessibilityDescription: "发送回复"
             )
             sendButton.isBordered = false
             sendButton.contentTintColor = .controlAccentColor
@@ -2754,7 +3345,7 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
             sendButton.action = #selector(submitPrompt)
             sendButton.toolTip = opensThreadWhenPromptIsEmpty
                 ? "打开 Codex；输入内容后发送"
-                : "继续该项目"
+                : "发送回复"
 
             let inputControls = NSStackView(views: [promptField, imageCountLabel, sendButton])
             inputControls.orientation = .horizontal
@@ -2777,26 +3368,44 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
             ])
             sendButton.widthAnchor.constraint(equalToConstant: 22).isActive = true
 
-            var conversationViews: [NSView] = [mainRow, conversationStatusLabel]
+            var conversationViews: [NSView] = [mainRow, activityTimeline]
             if let count = item.phaseCount, count > 0 {
                 let progress = StageProgressView(
                     count: count,
                     current: min(max(item.phaseIndex ?? 0, 0), count),
                     color: item.status.color
                 )
-                progress.heightAnchor.constraint(equalToConstant: 3).isActive = true
-                conversationViews.append(progress)
+                progress.setContentHuggingPriority(.defaultLow, for: .horizontal)
+                let progressLabel = NSTextField(labelWithString: summary.progressText ?? "")
+                progressLabel.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
+                progressLabel.textColor = .tertiaryLabelColor
+                progressLabel.setContentHuggingPriority(.required, for: .horizontal)
+                let progressRow = NSStackView(views: [progress, progressLabel])
+                progressRow.orientation = .horizontal
+                progressRow.alignment = .centerY
+                progressRow.spacing = 8
+                progressRow.heightAnchor.constraint(equalToConstant: 13).isActive = true
+                conversationViews.append(progressRow)
             }
             conversationViews.append(conversationInputBackground)
             let stack = NSStackView(views: conversationViews)
             stack.orientation = .vertical
-            stack.alignment = .width
-            stack.spacing = 4
+            stack.alignment = .leading
+            stack.spacing = 0
+            stack.setCustomSpacing(8, after: mainRow)
+            stack.setCustomSpacing(item.phaseCount == nil ? 10 : 7, after: activityTimeline)
+            if conversationViews.count > 3 {
+                stack.setCustomSpacing(8, after: conversationViews[2])
+            }
             stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            stack.setHuggingPriority(.required, for: .vertical)
+            stack.setContentCompressionResistancePriority(.required, for: .vertical)
             stack.translatesAutoresizingMaskIntoConstraints = false
             addSubview(stack)
+            conversationViews.forEach {
+                $0.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            }
             NSLayoutConstraint.activate([
-                heightAnchor.constraint(equalToConstant: contentMode.conversationCardHeight),
                 stack.leadingAnchor.constraint(
                     equalTo: leadingAnchor,
                     constant: DesktopPanelLayout.workItemHorizontalInset
@@ -2840,7 +3449,22 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
 
     required init?(coder: NSCoder) { nil }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
+    }
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    var activityRowsFillLeadingEdgeForTesting: Bool {
+        layoutSubtreeIfNeeded()
+        activityTimeline.layoutSubtreeIfNeeded()
+        guard !activityTimeline.arrangedSubviews.isEmpty else { return false }
+        return activityTimeline.arrangedSubviews.allSatisfy { row in
+            abs(row.frame.minX) < 0.5
+                && abs(row.frame.width - activityTimeline.bounds.width) < 0.5
+        }
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -2882,8 +3506,17 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
     }
 
     func updateConversationStatus(_ text: String, isBusy: Bool) {
-        conversationStatusLabel.stringValue = text
-        conversationStatusLabel.textColor = contentMode.conversationStatusTextColor(isBusy: isBusy)
+        activityTimeline.arrangedSubviews.forEach { view in
+            activityTimeline.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        let row = CodexActivityRowView(
+            text: text,
+            isCurrent: isBusy,
+            isResult: !isBusy,
+            maximumLineCount: isBusy ? 2 : (contentMode == .clean ? 4 : 8)
+        )
+        activityTimeline.addArrangedSubview(row)
         promptField.isEnabled = !isBusy
         sendButton.isEnabled = !isBusy
     }
@@ -2921,11 +3554,16 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
                 actions.isHidden = true
             }
         }
-        layer?.borderColor = (hovering ? NSColor.controlAccentColor : DesktopPanelPalette.stroke)
-            .withAlphaComponent(hovering ? 0.50 : 0.88).cgColor
-        layer?.backgroundColor = DesktopPanelPalette.card
-            .blended(withFraction: hovering ? 0.055 : 0, of: .white)?
-            .withAlphaComponent(0.98).cgColor
+        updateAppearance()
+    }
+
+    private func updateAppearance() {
+        layer?.borderColor = (isHovering ? NSColor.controlAccentColor : DesktopPanelPalette.stroke)
+            .withAlphaComponent(isHovering ? 0.50 : 0.88)
+            .cgColor(resolvedFor: effectiveAppearance)
+        layer?.backgroundColor = (isHovering ? DesktopPanelPalette.hoveredCard : DesktopPanelPalette.card)
+            .withAlphaComponent(0.98)
+            .cgColor(resolvedFor: effectiveAppearance)
     }
 
     private func actionButton(symbol: String, toolTip: String) -> NSButton {
@@ -3081,15 +3719,20 @@ private final class RoundedInputBackground: NSView {
 
     private func updateAppearance() {
         let accent = NSColor.controlAccentColor
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         highlightLayer.colors = [
-            NSColor.white.withAlphaComponent(0.06).cgColor,
+            (isDark ? NSColor.white : NSColor.black)
+                .withAlphaComponent(isDark ? 0.06 : 0.018).cgColor,
             accent.withAlphaComponent(isFocused ? 0.10 : 0.025).cgColor,
             NSColor.clear.cgColor,
         ]
-        layer?.backgroundColor = DesktopPanelPalette.input.withAlphaComponent(0.99).cgColor
+        layer?.backgroundColor = DesktopPanelPalette.input
+            .withAlphaComponent(0.99)
+            .cgColor(resolvedFor: effectiveAppearance)
         layer?.borderWidth = isFocused ? 1.1 : 0.7
         layer?.borderColor = (isFocused ? accent : DesktopPanelPalette.stroke)
-            .withAlphaComponent(isFocused ? 0.78 : 0.92).cgColor
+            .withAlphaComponent(isFocused ? 0.78 : 0.92)
+            .cgColor(resolvedFor: effectiveAppearance)
         layer?.shadowColor = accent.withAlphaComponent(0.22).cgColor
         layer?.shadowOpacity = isFocused ? 1 : 0
         layer?.shadowRadius = 8
@@ -3129,8 +3772,6 @@ private final class StageProgressView: NSView {
 @MainActor
 private final class PanelBackgroundView: NSVisualEffectView {
     var onHoverChanged: ((Bool) -> Void)?
-    private let tintLayer = CAGradientLayer()
-    private let highlightLayer = CAGradientLayer()
     private var trackingAreaReference: NSTrackingArea?
 
     override init(frame frameRect: NSRect) {
@@ -3142,13 +3783,6 @@ private final class PanelBackgroundView: NSVisualEffectView {
         layer?.cornerRadius = 22
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = true
-        tintLayer.startPoint = CGPoint(x: 0, y: 0)
-        tintLayer.endPoint = CGPoint(x: 1, y: 1)
-        highlightLayer.startPoint = CGPoint(x: 0.15, y: 0)
-        highlightLayer.endPoint = CGPoint(x: 0.85, y: 1)
-        highlightLayer.locations = [0, 0.35, 1]
-        layer?.addSublayer(tintLayer)
-        layer?.addSublayer(highlightLayer)
         updateColors()
     }
 
@@ -3163,8 +3797,6 @@ private final class PanelBackgroundView: NSVisualEffectView {
 
     override func layout() {
         super.layout()
-        tintLayer.frame = bounds
-        highlightLayer.frame = bounds
     }
 
     override func updateTrackingAreas() {
@@ -3195,23 +3827,19 @@ private final class PanelBackgroundView: NSVisualEffectView {
     }
 
     private func updateColors() {
-        tintLayer.colors = [
-            NSColor.white.withAlphaComponent(0.075).cgColor,
-            NSColor.controlAccentColor.withAlphaComponent(0.045).cgColor,
-            NSColor.black.withAlphaComponent(0.08).cgColor,
-        ]
-        highlightLayer.colors = [
-            NSColor.white.withAlphaComponent(0.19).cgColor,
-            NSColor.white.withAlphaComponent(0.055).cgColor,
-            NSColor.clear.cgColor,
-        ]
-        layer?.backgroundColor = DesktopPanelPalette.base.withAlphaComponent(0.96).cgColor
-        layer?.borderWidth = 0.8
-        layer?.borderColor = DesktopPanelPalette.stroke.withAlphaComponent(0.95).cgColor
-        layer?.shadowColor = NSColor.black.withAlphaComponent(0.46).cgColor
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        material = isDark ? .hudWindow : .underWindowBackground
+        layer?.backgroundColor = DesktopPanelPalette.base
+            .withAlphaComponent(isDark ? 0.78 : 0.82)
+            .cgColor(resolvedFor: effectiveAppearance)
+        layer?.borderWidth = 0.6
+        layer?.borderColor = DesktopPanelPalette.stroke
+            .withAlphaComponent(isDark ? 0.65 : 0.55)
+            .cgColor(resolvedFor: effectiveAppearance)
+        layer?.shadowColor = NSColor.black.withAlphaComponent(isDark ? 0.30 : 0.12).cgColor
         layer?.shadowOpacity = 1
-        layer?.shadowRadius = 18
-        layer?.shadowOffset = CGSize(width: 0, height: -3)
+        layer?.shadowRadius = 12
+        layer?.shadowOffset = CGSize(width: 0, height: -2)
     }
 }
 

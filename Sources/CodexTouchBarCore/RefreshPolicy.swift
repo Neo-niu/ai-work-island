@@ -2,6 +2,7 @@ import Foundation
 
 public enum RefreshPolicy {
     public static let timerRunLoopMode = RunLoop.Mode.common
+    public static let companyQuotaInterval: TimeInterval = 5 * 60
 
     public static func pollInterval(
         isDashboardVisible: Bool,

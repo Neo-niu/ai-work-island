@@ -43,6 +43,7 @@ public struct WorkItem: Codable, Equatable, Identifiable, Sendable {
     public let phaseIndex: Int?
     public let phaseCount: Int?
     public let recentActivity: String?
+    public let activities: [String]?
 
     public init(
         id: String,
@@ -57,7 +58,8 @@ public struct WorkItem: Codable, Equatable, Identifiable, Sendable {
         phase: String? = nil,
         phaseIndex: Int? = nil,
         phaseCount: Int? = nil,
-        recentActivity: String? = nil
+        recentActivity: String? = nil,
+        activities: [String]? = nil
     ) {
         self.id = id
         self.source = source
@@ -72,6 +74,7 @@ public struct WorkItem: Codable, Equatable, Identifiable, Sendable {
         self.phaseIndex = phaseIndex
         self.phaseCount = phaseCount
         self.recentActivity = recentActivity
+        self.activities = activities
     }
 }
 
@@ -151,14 +154,15 @@ public enum WorkStatusHub {
                     id: "codex:\(thread.id)",
                     source: "Codex",
                     title: thread.title ?? group.name,
-                    detail: thread.isActive ? "正在处理 · \(group.name)" : "等待查看 · \(group.name)",
+                    detail: group.name,
                     status: thread.isActive ? .running : .waiting,
                     startedAt: thread.startedAt,
                     updatedAt: thread.updatedAt,
                     phase: thread.isActive ? thread.liveProgress?.currentActivity : nil,
                     phaseIndex: thread.isActive ? thread.liveProgress?.completedStepCount : nil,
                     phaseCount: thread.isActive ? thread.liveProgress?.totalStepCount : nil,
-                    recentActivity: thread.isActive ? thread.liveProgress?.recentActivity : nil
+                    recentActivity: thread.isActive ? thread.liveProgress?.recentActivity : nil,
+                    activities: thread.isActive ? thread.liveProgress?.activities ?? [] : []
                 )
             }
         }

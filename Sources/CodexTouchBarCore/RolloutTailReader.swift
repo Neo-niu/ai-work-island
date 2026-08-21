@@ -60,7 +60,7 @@ enum RolloutTailReader {
             latestAssistantResult = assistantResult(in: lineData) ?? latestAssistantResult
             if let activity = activityMessage(in: lineData), liveActivities.last != activity {
                 liveActivities.append(activity)
-                liveActivities = Array(liveActivities.suffix(3))
+                liveActivities = Array(liveActivities.suffix(6))
             }
             latestPlanProgress = planProgress(in: lineData) ?? latestPlanProgress
         }
@@ -133,7 +133,7 @@ enum RolloutTailReader {
             rawText = nil
         }
         guard let rawText else { return nil }
-        return compactDisplayText(rawText)
+        return resultDisplayText(rawText)
     }
 
     static func activityMessage(in lineData: Data) -> String? {
@@ -160,12 +160,16 @@ enum RolloutTailReader {
         } else if envelope["type"] as? String == "response_item",
                   payload["type"] as? String == "custom_tool_call",
                   let name = payload["name"] as? String {
-            rawText = toolActivity(name: name)
+            rawText = toolActivity(name: name, input: payload["input"] as? String)
+        } else if envelope["type"] as? String == "response_item",
+                  payload["type"] as? String == "function_call",
+                  let name = payload["name"] as? String {
+            rawText = toolActivity(name: name, input: payload["arguments"] as? String)
         } else {
             rawText = nil
         }
         guard let rawText else { return nil }
-        return compactDisplayText(rawText)
+        return liveActivityDisplayText(rawText)
     }
 
     static func planProgress(in lineData: Data) -> CodexLiveProgress? {
@@ -224,18 +228,96 @@ enum RolloutTailReader {
         }
     }
 
-    private static func toolActivity(name: String) -> String? {
-        switch name {
-        case "exec_command": "正在运行命令"
-        case "apply_patch": "正在修改文件"
-        case "web__run", "web_search": "正在查询资料"
-        case "view_image": "正在检查图片"
-        case "write_stdin": "正在等待命令结果"
+    private static func toolActivity(name: String, input: String? = nil) -> String? {
+        if name == "exec", let input {
+            if input.contains("tools.exec_command") {
+                return commandActivity(from: input)
+            }
+            let nestedTools: [(String, String)] = [
+                ("tools.apply_patch", "修改文件"),
+                ("tools.web_search", "正在操作：查询资料"),
+                ("tools.view_image", "正在操作：检查图片"),
+                ("tools.write_stdin", "正在操作：等待命令结果"),
+            ]
+            if let match = nestedTools.first(where: { input.contains($0.0) }) {
+                return match.1
+            }
+        }
+        return switch name {
+        case "exec_command": commandActivity(from: input)
+        case "apply_patch": "修改文件"
+        case "web__run", "web_search": "正在操作：查询资料"
+        case "view_image": "正在操作：检查图片"
+        case "write_stdin": "正在操作：等待命令结果"
         default: nil
         }
     }
 
+    private static func commandActivity(from input: String?) -> String {
+        guard let input, let command = commandValue(in: input) else {
+            return "运行命令"
+        }
+        return "运行命令：\(redactedCommand(command))"
+    }
+
+    private static func commandValue(in input: String) -> String? {
+        if let data = input.data(using: .utf8),
+           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let command = root["cmd"] as? String {
+            return command
+        }
+        let pattern = #"(?:\"cmd\"|cmd)\s*:\s*\"((?:\\.|[^\"\\])*)\""#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(
+                in: input,
+                range: NSRange(input.startIndex..<input.endIndex, in: input)
+              ),
+              let valueRange = Range(match.range(at: 1), in: input) else {
+            return nil
+        }
+        let escaped = String(input[valueRange])
+        guard let data = "\"\(escaped)\"".data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(String.self, from: data) else {
+            return escaped
+        }
+        return decoded
+    }
+
+    private static func redactedCommand(_ command: String) -> String {
+        var value = command
+            .components(separatedBy: .newlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let sensitivePatterns = [
+            #"(?i)(authorization:\s*bearer\s+)[^\s'\"]+"#,
+            #"(?i)((?:token|api[_-]?key|password|secret)\s*[=:]\s*)[^\s'\"]+"#,
+        ]
+        for pattern in sensitivePatterns {
+            value = value.replacingOccurrences(
+                of: pattern,
+                with: "$1••••",
+                options: .regularExpression
+            )
+        }
+        return value.count > 320 ? String(value.prefix(319)) + "…" : value
+    }
+
     private static func compactDisplayText(_ rawText: String) -> String? {
+        resultDisplayText(rawText, preservesParagraphs: false, limit: 120)
+    }
+
+    private static func liveActivityDisplayText(_ rawText: String) -> String? {
+        resultDisplayText(rawText, preservesParagraphs: true, limit: 420)
+    }
+
+    /// Final answers are read in the work-island card itself, so retain their
+    /// paragraph structure and enough content to make the next decision there.
+    /// Live activity stays compact through `compactDisplayText`.
+    private static func resultDisplayText(
+        _ rawText: String,
+        preservesParagraphs: Bool = true,
+        limit: Int = 1_200
+    ) -> String? {
         var displayText = rawText
         if let citationStart = displayText.range(of: "<oai-mem-citation>") {
             displayText.removeSubrange(citationStart.lowerBound...)
@@ -250,17 +332,21 @@ enum RolloutTailReader {
             with: "",
             options: .regularExpression
         )
-        displayText = displayText.replacingOccurrences(
-            of: #"(?:^|\s)[-•]\s+"#,
-            with: " ",
-            options: .regularExpression
-        )
-        let compact = displayText
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
-        guard !compact.isEmpty else { return nil }
-        return compact.count > 120 ? String(compact.prefix(119)) + "…" : compact
+        let lines = displayText.components(separatedBy: .newlines).map { line in
+            line.replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+        }
+        let normalized: String
+        if preservesParagraphs {
+            normalized = lines.reduce(into: [String]()) { result, line in
+                if line.isEmpty, result.last?.isEmpty != false { return }
+                result.append(line)
+            }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        } else {
+            normalized = lines.filter { !$0.isEmpty }.joined(separator: " ")
+        }
+        guard !normalized.isEmpty else { return nil }
+        return normalized.count > limit ? String(normalized.prefix(limit - 1)) + "…" : normalized
     }
 
     static func lineEvents(

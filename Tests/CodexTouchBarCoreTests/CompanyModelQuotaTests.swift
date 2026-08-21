@@ -23,3 +23,9 @@ import Testing
     )
     #expect(restored == original)
 }
+
+@Test func companyQuotaPercentageAlwaysUsesTwoHundredDollarFullAllowance() {
+    let quota = CompanyModelQuota(totalUSD: 80, usedUSD: 50, resetsAt: nil)
+    #expect(quota.remainingUSD == 150)
+    #expect(quota.remainingPercent == 75)
+}

@@ -432,7 +432,7 @@ public actor RolloutScanner {
                 .reduce(into: [String]()) { result, activity in
                     if result.last != activity { result.append(activity) }
                 }
-                .suffix(3)
+                .suffix(6)
         )
         let planProgress = update.latestPlanProgress
         let liveProgress: CodexLiveProgress?
@@ -754,7 +754,7 @@ public actor RolloutScanner {
         for line in lines {
             if let activity = RolloutTailReader.activityMessage(in: line), activities.last != activity {
                 activities.append(activity)
-                activities = Array(activities.suffix(3))
+                activities = Array(activities.suffix(6))
             }
             planProgress = RolloutTailReader.planProgress(in: line) ?? planProgress
         }

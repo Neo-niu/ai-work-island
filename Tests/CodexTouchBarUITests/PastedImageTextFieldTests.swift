@@ -1,5 +1,6 @@
 import AppKit
 @testable import CodexTouchBar
+import CodexTouchBarCore
 import Testing
 
 @Test func workIslandNewThreadsUseFullAccessWithoutApprovalPrompts() {
@@ -31,6 +32,104 @@ import Testing
     #expect(params?["threadId"] == "019ffaca-d250-7b61-ba0c-56744b36a354")
 }
 
+@Test func threadOwnershipTransferIsPerThreadAndRollsBackDeterministically() {
+    var target = ThreadOwnershipStateMachine()
+    let peer = ThreadOwnershipStateMachine()
+
+    let began = target.beginTransfer()
+    #expect(began)
+    #expect(target.state == .transferring)
+    #expect(peer.state == .workIsland)
+    let duplicate = target.beginTransfer()
+    #expect(!duplicate)
+    let rolledBack = target.rollbackTransfer()
+    #expect(rolledBack)
+    #expect(target.state == .workIsland)
+    let beganAgain = target.beginTransfer()
+    let confirmed = target.confirmTransfer()
+    #expect(beganAgain)
+    #expect(confirmed)
+    #expect(target.state == .codex)
+    #expect(peer.state == .workIsland)
+}
+
+@Test func completedThreadAndTransferAcknowledgementAreIdempotent() {
+    var ownership = ThreadOwnershipStateMachine()
+    let began = ownership.beginTransfer()
+    let confirmed = ownership.confirmTransfer()
+    let duplicateConfirmation = ownership.confirmTransfer()
+    let lateRollback = ownership.rollbackTransfer()
+    #expect(began)
+    #expect(confirmed)
+    #expect(!duplicateConfirmation)
+    #expect(!lateRollback)
+}
+
+@Test func unsubscribeFailureRestoresWorkIslandOwnership() {
+    var ownership = ThreadOwnershipStateMachine()
+    let began = ownership.beginTransfer()
+    let restored = ownership.rollbackTransfer()
+    #expect(began && restored)
+    #expect(ownership.state == .workIsland)
+}
+
+@Test func timeoutRollbackAllowsTheThreadToTransferAgain() {
+    var ownership = ThreadOwnershipStateMachine()
+    _ = ownership.beginTransfer()
+    _ = ownership.rollbackTransfer()
+    let retried = ownership.beginTransfer()
+    #expect(retried)
+    #expect(ownership.state == .transferring)
+}
+
+@Test func peerTaskRemainsOwnedWhenTargetTransfers() {
+    var target = ThreadOwnershipStateMachine()
+    let peer = ThreadOwnershipStateMachine()
+    _ = target.beginTransfer()
+    _ = target.confirmTransfer()
+    #expect(target.state == .codex)
+    #expect(peer.state == .workIsland)
+    #expect(!SharedAppServerLifetimePolicy.shouldStop(workIslandOwnedThreadCount: 1))
+}
+
+@Test func lastTransferredThreadStopsTheSharedService() {
+    #expect(SharedAppServerLifetimePolicy.shouldStop(workIslandOwnedThreadCount: 0))
+}
+
+@Test func restartRecoveryTreatsMissingInProcessOwnerAsAlreadyTransferred() {
+    #expect(CodexConversationBridge.ownershipState(threadID: "not-registered-after-restart") == .codex)
+}
+
+@Test func restartRecoveryStopsDurableServerOnlyWhenTargetIsTheLastActiveTask() {
+    #expect(RestartRecoveryTransferPolicy.canStopServerBeforeOpening(
+        hasInProcessOwner: false,
+        hasOtherActiveWorkIslandThread: false
+    ))
+    #expect(!RestartRecoveryTransferPolicy.canStopServerBeforeOpening(
+        hasInProcessOwner: true,
+        hasOtherActiveWorkIslandThread: false
+    ))
+    #expect(!RestartRecoveryTransferPolicy.canStopServerBeforeOpening(
+        hasInProcessOwner: false,
+        hasOtherActiveWorkIslandThread: true
+    ))
+}
+
+@Test func restartRecoveryWaitsOnlyForOtherActiveWorkIslandTasks() {
+    #expect(RestartRecoveryTransferPolicy.shouldWaitForPeerTasks(
+        hasInProcessOwner: false,
+        hasOtherActiveWorkIslandThread: true
+    ))
+    #expect(!RestartRecoveryTransferPolicy.shouldWaitForPeerTasks(
+        hasInProcessOwner: true,
+        hasOtherActiveWorkIslandThread: true
+    ))
+    #expect(!RestartRecoveryTransferPolicy.shouldWaitForPeerTasks(
+        hasInProcessOwner: false,
+        hasOtherActiveWorkIslandThread: false
+    ))
+}
+
 @Test func everyUserOpenEntryRoutesRetainedThreadsThroughWorkIslandTransfer() {
     let retainedThreadID = "019ffaca-d250-7b61-ba0c-56744b36a354"
     let retained = Set([retainedThreadID])
@@ -43,6 +142,26 @@ import Testing
         threadID: "019ffb2e-bb82-7d51-a642-fc031f582e78",
         retainedWorkIslandThreadIDs: retained
     ))
+}
+
+@Test func waitingCodexCardOpensItsThreadBeforeShowingGenericIssueDetails() {
+    let waitingCodex = WorkItem(
+        id: "codex:019fffa3-7e30-78e3-a7cb-29930bae01ff",
+        source: "Codex",
+        title: "快捷键地图卡死了",
+        status: .waiting,
+        updatedAt: Date()
+    )
+    let failedAutomation = WorkItem(
+        id: "automation:failed",
+        source: "自动化",
+        title: "失败任务",
+        status: .failed,
+        updatedAt: Date()
+    )
+
+    #expect(WorkItemPrimaryAction.resolve(waitingCodex) == .codexThread)
+    #expect(WorkItemPrimaryAction.resolve(failedAutomation) == .issue)
 }
 
 @MainActor

@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "AIWorkIsland",
+    name: "AI工作岛",
     platforms: [
         .macOS(.v13),
     ],

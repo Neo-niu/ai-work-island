@@ -8,7 +8,7 @@ import Testing
 
     #expect(image.size == NSSize(width: 18, height: 18))
     #expect(image.isTemplate)
-    #expect(image.accessibilityDescription == "AI 工作岛")
+    #expect(image.accessibilityDescription == "AI工作岛")
 }
 
 @MainActor

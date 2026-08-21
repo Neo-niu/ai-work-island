@@ -62,7 +62,7 @@ async function movePointer(x, y) {
 
 function capsuleCenter(tree) {
   const match = tree.match(
-    /XCUIElementTypeButton[^>]*label="恢复 AI 工作岛[^>]*x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/
+    /XCUIElementTypeButton[^>]*label="恢复 AI工作岛[^>]*x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"/
   );
   if (!match) throw new Error("Could not resolve floating capsule frame");
   return {
@@ -85,15 +85,15 @@ try {
     },
   });
   sessionID = session.sessionId;
-  assert(session.capabilities.bundleId === appBundleID, "会话绑定到 AI 工作岛 Bundle ID");
+  assert(session.capabilities.bundleId === appBundleID, "会话绑定到 AI工作岛 Bundle ID");
 
   let tree = await source();
-  if (!tree.includes("恢复 AI 工作岛") && tree.includes("新任务指令")) {
+  if (!tree.includes("恢复 AI工作岛") && tree.includes("新任务指令")) {
     await movePointerOutside();
     await delay(900);
     tree = await source();
   }
-  assert(tree.includes("恢复 AI 工作岛"), "冷启动可读取悬浮胶囊");
+  assert(tree.includes("恢复 AI工作岛"), "冷启动可读取悬浮胶囊");
 
   let center = capsuleCenter(tree);
   await movePointer(center.x, center.y);
@@ -123,7 +123,7 @@ try {
   await movePointerOutside();
   await delay(900);
   tree = await source();
-  assert(!tree.includes("新任务指令") && tree.includes("恢复 AI 工作岛"), "鼠标离开后面板自动回缩");
+  assert(!tree.includes("新任务指令") && tree.includes("恢复 AI工作岛"), "鼠标离开后面板自动回缩");
 
   for (let index = 0; index < 3; index += 1) {
     tree = await source();
@@ -134,7 +134,7 @@ try {
     await delay(800);
   }
   tree = await source();
-  assert(tree.includes("恢复 AI 工作岛") && !tree.includes("新任务指令"), "快速展开回缩三轮后窗口未消失或卡死");
+  assert(tree.includes("恢复 AI工作岛") && !tree.includes("新任务指令"), "快速展开回缩三轮后窗口未消失或卡死");
 
   const screenshot = await request(`/session/${sessionID}/screenshot`);
   assert(typeof screenshot === "string" && screenshot.length > 1_000, "安装版截图可由黑盒驱动真实回读");

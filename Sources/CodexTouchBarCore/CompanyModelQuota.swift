@@ -1,6 +1,9 @@
 import Foundation
 
 public struct CompanyModelQuota: Codable, Equatable, Sendable {
+    /// Product display baseline: a complete company allowance is USD 200.
+    public static let fullAllowanceUSD = 200.0
+
     public let totalUSD: Double
     public let usedUSD: Double
     public let resetsAt: Date?
@@ -11,11 +14,12 @@ public struct CompanyModelQuota: Codable, Equatable, Sendable {
         self.resetsAt = resetsAt
     }
 
-    public var remainingUSD: Double { max(totalUSD - usedUSD, 0) }
+    public var remainingUSD: Double {
+        min(max(Self.fullAllowanceUSD - usedUSD, 0), Self.fullAllowanceUSD)
+    }
 
     public var remainingPercent: Int {
-        guard totalUSD > 0 else { return 0 }
-        return Int((remainingUSD / totalUSD * 100).rounded())
+        Int((remainingUSD / Self.fullAllowanceUSD * 100).rounded())
     }
 
     public static func parsePlatformResponse(_ data: Data) -> CompanyModelQuota? {

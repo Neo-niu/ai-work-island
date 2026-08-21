@@ -1,6 +1,15 @@
 import Carbon.HIToolbox
 import Foundation
 
+enum RecordingHotKeyIntent: Equatable {
+    case start
+    case stopAndKeep
+
+    static func resolve(isRecording: Bool) -> Self {
+        isRecording ? .stopAndKeep : .start
+    }
+}
+
 @MainActor
 final class GlobalRecordingHotKey {
     enum HotKeyError: LocalizedError {

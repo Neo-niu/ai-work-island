@@ -15,7 +15,7 @@ import Testing
 
 @Test func independentRelaunchIsOwnedByLaunchd() {
     let arguments = IndependentAppRelauncher.launchctlArguments(
-        bundlePath: "/Applications/AI 工作岛.app",
+        bundlePath: "/Applications/AI工作岛.app",
         currentPID: 4321
     )
 
@@ -25,6 +25,6 @@ import Testing
     }))
     #expect(arguments.contains("/bin/sh"))
     #expect(arguments.contains("4321"))
-    #expect(arguments.contains("/Applications/AI 工作岛.app"))
+    #expect(arguments.contains("/Applications/AI工作岛.app"))
     #expect(!arguments.joined(separator: " ").contains("open -n"))
 }

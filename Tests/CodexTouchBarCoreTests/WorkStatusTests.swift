@@ -31,12 +31,14 @@ import Testing
         phase: "正在：核对任务状态",
         completedSteps: 2,
         totalSteps: 4,
-        recentActivity: "刚刚：读取任务索引"
+        recentActivity: "刚刚：读取任务索引",
+        activities: ["正在操作：读取任务索引", "正在：核对任务状态"]
     )
 
-    #expect(summary.primary == "进度 2/4 · 当前：核对任务状态")
-    #expect(summary.secondary == "最新：读取任务索引")
-    #expect(!summary.text.contains("正在：正在"))
+    #expect(summary.entries == ["读取任务索引", "核对任务状态"])
+    #expect(summary.progressText == "2/4 个步骤")
+    #expect(!summary.text.contains("当前："))
+    #expect(!summary.text.contains("最新："))
 }
 
 @Test func detailedCodexCardStatusSeparatesProgressFromCurrentAction() {
@@ -47,7 +49,8 @@ import Testing
         recentActivity: "测试已通过"
     )
 
-    #expect(summary.detailedText == "进度 3/5\n当前：验证安装包\n最新：测试已通过")
+    #expect(summary.entries == ["测试已通过", "验证安装包"])
+    #expect(summary.progressText == "3/5 个步骤")
 }
 
 @Test func codexCardStatusDropsDuplicateRecentActivity() {
@@ -58,14 +61,13 @@ import Testing
         recentActivity: "正在运行测试"
     )
 
-    #expect(summary.text == "当前：运行测试")
+    #expect(summary.text == "运行测试")
 }
 
 @Test func waitingCodexCardStatesTheRequiredUserAction() {
     let summary = CodexCardStatusSummary.waiting(lastAssistantResult: "本地验证通过")
 
-    #expect(summary.primary == "需要你：查看结果并决定下一步")
-    #expect(summary.secondary == "结果：本地验证通过")
+    #expect(summary.entries == ["本地验证通过"])
 }
 
 @Test func onlyFailedAndStaleWorkItemsRequireAttention() {
@@ -128,6 +130,7 @@ import Testing
 
     #expect(items.map(\.status) == [.running, .waiting])
     #expect(items.map(\.id) == ["codex:active", "codex:unread"])
+    #expect(items.map(\.displayDetail) == ["项目", "项目"])
 }
 
 @Test func automationScannerExpiresAStaleRunningTask() throws {

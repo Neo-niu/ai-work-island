@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDisplayName</key>
-    <string>AI 工作岛</string>
+    <string>AI工作岛</string>
     <key>CFBundleExecutable</key>
     <string>CodexTouchBar</string>
     <key>CFBundleIdentifier</key>
     <string>dev.kanyun.CodexHermesTouchBar</string>
     <key>CFBundleName</key>
-    <string>AI 工作岛</string>
+    <string>AI工作岛</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>

@@ -7,7 +7,7 @@ actor CompanyQuotaScanner {
     private static let cachedQuotaDefaultsKey = "companyQuota.lastSuccessfulResponse"
     private var cachedQuota: CompanyModelQuota?
     private var lastAttempt: Date?
-    private let refreshInterval: TimeInterval = 60
+    private let refreshInterval = RefreshPolicy.companyQuotaInterval
 
     init() {
         if let data = UserDefaults.standard.data(forKey: Self.cachedQuotaDefaultsKey) {
@@ -47,7 +47,14 @@ actor CompanyQuotaScanner {
                         let url = tab.value(forKey: "URL") as? String
                         guard url?.hasPrefix("https://model.zhenguanyu.com/") == true else { continue }
                         let javascript = """
-                        (()=>{const x=new XMLHttpRequest();x.open('GET','/api/v1/users/self',false);x.send();return x.responseText})()
+                        (()=>{
+                          const x=new XMLHttpRequest();
+                          const nonce=Date.now();
+                          x.open('GET',`/api/v1/users/self?_work_island_refresh=${nonce}`,false);
+                          x.setRequestHeader('Cache-Control','no-cache');
+                          x.send();
+                          return x.responseText;
+                        })()
                         """
                         if let quota = Self.execute(javascript, in: tab) { return quota }
                         // Edge may discard a background tab. Reloading the exact

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_BUNDLE="${1:-dist/AI 工作岛.app}"
+APP_BUNDLE="${1:-dist/AI工作岛.app}"
 
 if [[ ! -d "$APP_BUNDLE" ]]; then
   echo "app bundle not found: $APP_BUNDLE" >&2

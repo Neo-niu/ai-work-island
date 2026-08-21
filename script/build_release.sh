@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PRODUCT_NAME="CodexTouchBar"
-DISPLAY_NAME="AI 工作岛"
+DISPLAY_NAME="AI工作岛"
 BUNDLE_ID="dev.kanyun.CodexHermesTouchBar"
 DEFAULT_SIGN_IDENTITY="Developer ID Application: Burak Karahan (UPK4SC93AN)"
 DEFAULT_NOTARY_PROFILE="desktop-updater-notary"

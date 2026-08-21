@@ -667,7 +667,18 @@ private func rollout(
     #expect(RolloutTailReader.assistantResult(in: commentary) == nil)
     #expect(
         RolloutTailReader.assistantResult(in: final)
-            == "已完成第一项。 下一步可以继续。"
+            == "已完成第一项。\n下一步可以继续。"
+    )
+}
+
+@Test func tailReaderKeepsAReadableFinalAnswerInsteadOfCompressingIt() {
+    let final = Data(#"""
+    {"type":"event_msg","payload":{"type":"agent_message","phase":"final_answer","message":"核心结论：已完成。\n\n- 异常：仍需确认权限\n- 下一步：可直接回复继续"}}
+    """#.utf8)
+
+    #expect(
+        RolloutTailReader.assistantResult(in: final)
+            == "核心结论：已完成。\n\n- 异常：仍需确认权限\n- 下一步：可直接回复继续"
     )
 }
 
@@ -679,9 +690,32 @@ private func rollout(
     {"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"正在运行回归测试"}]}}
     """.utf8)
 
-    #expect(RolloutTailReader.activityMessage(in: eventMessage) == "正在检查任务状态。 稍后继续。")
+    #expect(RolloutTailReader.activityMessage(in: eventMessage) == "正在检查任务状态。\n稍后继续。")
     #expect(RolloutTailReader.activityMessage(in: responseItem) == "正在运行回归测试")
     #expect(RolloutTailReader.assistantResult(in: eventMessage) == nil)
+}
+
+@Test func tailReaderDescribesCurrentWrappedToolOperations() {
+    let wrappedCommand = Data(#"""
+    {"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const r = await tools.exec_command({cmd:\"swift test\"}); text(r.output);"}}
+    """#.utf8)
+    let wrappedPatch = Data(#"""
+    {"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"text(await tools.apply_patch(patch));"}}
+    """#.utf8)
+
+    #expect(RolloutTailReader.activityMessage(in: wrappedCommand) == "运行命令：swift test")
+    #expect(RolloutTailReader.activityMessage(in: wrappedPatch) == "修改文件")
+}
+
+@Test func tailReaderShowsDirectCommandsAndRedactsSecrets() {
+    let direct = Data(#"""
+    {"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"curl -H 'Authorization: Bearer private-token' https://example.com\"}"}}
+    """#.utf8)
+
+    #expect(
+        RolloutTailReader.activityMessage(in: direct)
+            == "运行命令：curl -H 'Authorization: Bearer ••••' https://example.com"
+    )
 }
 
 @Test func tailReaderUsesExplicitPlanForRealStepProgress() {

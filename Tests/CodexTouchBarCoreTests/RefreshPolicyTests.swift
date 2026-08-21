@@ -12,6 +12,10 @@ import Testing
     #expect(RefreshPolicy.timerRunLoopMode == .common)
 }
 
+@Test func companyQuotaRefreshesEveryFiveMinutes() {
+    #expect(RefreshPolicy.companyQuotaInterval == 300)
+}
+
 @Test func refreshPolicySkipsAnUnchangedTouchBarModel() {
     let thread = ActiveThread(
         id: "thread",

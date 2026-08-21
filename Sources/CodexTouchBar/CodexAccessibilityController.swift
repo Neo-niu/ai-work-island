@@ -242,7 +242,9 @@ final class CodexAccessibilityController {
             let elements = accessibilityElements(in: root)
             if elements.contains(where: {
                 $0.text.contains("conversation state not found") ||
-                $0.text.contains("未找到对话")
+                $0.text.contains("未找到对话") ||
+                $0.text.contains("已在另一个应用中打开") ||
+                $0.text.localizedCaseInsensitiveContains("open in another app")
             }) {
                 throw ControllerError.threadNotVisible
             }
