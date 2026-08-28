@@ -22,7 +22,7 @@ enum StatusItemIconRenderer {
             return true
         }
         image.isTemplate = true
-        image.accessibilityDescription = "AI 工作岛"
+        image.accessibilityDescription = "AI工作岛"
         return image
     }
 }

@@ -104,12 +104,8 @@ final class TouchBarController: NSObject {
         companyQuotaView.update(
             title: "公司",
             remainingPercent: quota.remainingPercent,
-            detail: String(format: "$%.2f 剩余", quota.remainingUSD),
-            accessibilityText: String(
-                format: "公司额度剩余 $%.2f，%d%%",
-                quota.remainingUSD,
-                quota.remainingPercent
-            )
+            detail: "\(quota.remainingPercent)% 剩余",
+            accessibilityText: "公司额度剩余 \(quota.remainingPercent)%"
         )
     }
 

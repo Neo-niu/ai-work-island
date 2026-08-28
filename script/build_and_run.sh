@@ -3,7 +3,7 @@ set -euo pipefail
 
 MODE="${1:-run}"
 PRODUCT_NAME="CodexTouchBar"
-DISPLAY_NAME="AI 工作岛"
+DISPLAY_NAME="AI工作岛"
 PROCESS_NAME="$PRODUCT_NAME"
 BUNDLE_ID="dev.kanyun.CodexHermesTouchBar"
 MIN_SYSTEM_VERSION="13.0"
@@ -79,11 +79,11 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundleIconName</key>
   <string>AppIcon</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.5.18</string>
+  <string>0.5.19</string>
   <key>CFBundleVersion</key>
-  <string>50</string>
+  <string>51</string>
   <key>GitHubReleaseTag</key>
-  <string>v0.5.18</string>
+  <string>v0.5.19</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
   <key>LSMultipleInstancesProhibited</key>

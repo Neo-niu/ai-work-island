@@ -21,9 +21,90 @@ enum CodexConversationRoute: Sendable {
     case new(cwd: URL)
 }
 
-enum CodexOwnershipReleaseResult {
-    case ready
-    case waitingForOtherWorkIslandTasks
+enum CodexCardContinuationPolicy {
+    static func route(threadID: String, cwd: URL, isActive: Bool) -> CodexConversationRoute {
+        .desktopThread(threadID: threadID, cwd: cwd, isActive: isActive)
+    }
+}
+
+struct CodexQueueCommand: Equatable {
+    let executableURL: URL
+    let arguments: [String]
+
+    static func make(
+        executableURL: URL,
+        threadID: String,
+        prompt: CodexPrompt,
+        cwd: URL
+    ) -> CodexQueueCommand {
+        let message = CodexQueuedImageFallback.message(
+            text: prompt.text,
+            imageURLs: prompt.imageURLs
+        )
+        let arguments = [
+            "queue",
+            "--thread", threadID,
+            "--message", message,
+            "-C", cwd.path,
+        ]
+        return CodexQueueCommand(executableURL: executableURL, arguments: arguments)
+    }
+}
+
+enum CodexOwnershipReleaseResult: Equatable {
+    case released
+    case alreadyTransferred
+    case failed(String)
+}
+
+enum ThreadOwnershipState: Equatable {
+    case workIsland
+    case transferring
+    case codex
+}
+
+struct ThreadOwnershipStateMachine {
+    private(set) var state: ThreadOwnershipState = .workIsland
+
+    mutating func beginTransfer() -> Bool {
+        guard state == .workIsland else { return false }
+        state = .transferring
+        return true
+    }
+
+    mutating func confirmTransfer() -> Bool {
+        guard state == .transferring else { return false }
+        state = .codex
+        return true
+    }
+
+    mutating func rollbackTransfer() -> Bool {
+        guard state == .transferring else { return false }
+        state = .workIsland
+        return true
+    }
+}
+
+enum SharedAppServerLifetimePolicy {
+    static func shouldStop(workIslandOwnedThreadCount: Int) -> Bool {
+        workIslandOwnedThreadCount == 0
+    }
+}
+
+enum RestartRecoveryTransferPolicy {
+    static func shouldWaitForPeerTasks(
+        hasInProcessOwner: Bool,
+        hasOtherActiveWorkIslandThread: Bool
+    ) -> Bool {
+        !hasInProcessOwner && hasOtherActiveWorkIslandThread
+    }
+
+    static func canStopServerBeforeOpening(
+        hasInProcessOwner: Bool,
+        hasOtherActiveWorkIslandThread: Bool
+    ) -> Bool {
+        !hasInProcessOwner && !hasOtherActiveWorkIslandThread
+    }
 }
 
 enum CodexConversationBridgeError: LocalizedError, Sendable {
@@ -200,38 +281,91 @@ enum CodexConversationBridge {
         route: CodexConversationRoute
     ) async throws -> CodexConversationResult {
         if case let .desktopThread(threadID, cwd, isActive) = route {
-            let disposition = try await CodexIPCClient().sendPrompt(
-                threadID: threadID,
-                cwd: cwd,
-                prompt: prompt.text,
-                imagePaths: prompt.imageURLs.map(\.path),
-                isActive: isActive
-            )
-            return CodexConversationResult(
-                threadID: threadID,
-                assistantText: isActive ? "指令已追加到当前任务。" : "新一轮任务已开始。",
-                steeredActiveTurn: disposition == .steeredActiveTurn
-            )
+            return try await Task.detached(priority: .userInitiated) {
+                try CodexQueueInvocation.run(
+                    threadID: threadID,
+                    prompt: prompt,
+                    cwd: cwd,
+                    isActive: isActive
+                )
+            }.value
         }
         return try await Task.detached(priority: .userInitiated) {
             try CodexAppServerInvocation.run(prompt: prompt, route: route)
         }.value
     }
 
-    static func releaseWorkIslandOwnership(threadID: String) -> CodexOwnershipReleaseResult {
-        let result = BackgroundTurnRegistry.shared.release(threadID: threadID)
-        guard result.idle else { return .waitingForOtherWorkIslandTasks }
-        if !result.released {
-            // The UI may have restarted while a launchd-owned turn continued.
-            // With no retained active peers, stopping the stale shared server is
-            // the only way to release its process-level loaded-thread state.
-            DurableCodexAppServer.stop()
-        }
-        return .ready
+    static func releaseWorkIslandOwnership(
+        threadID: String,
+        timeout: TimeInterval = 5
+    ) async -> CodexOwnershipReleaseResult {
+        await Task.detached(priority: .userInitiated) {
+            if !BackgroundTurnRegistry.shared.contains(threadID: threadID) {
+                return CodexAppServerInvocation.unsubscribeDetached(
+                    threadID: threadID,
+                    timeout: timeout
+                )
+            }
+            return BackgroundTurnRegistry.shared.release(threadID: threadID, timeout: timeout)
+        }.value
     }
 
-    static var isReadyForDesktopTransfer: Bool {
-        BackgroundTurnRegistry.shared.isIdle
+    static func ownershipState(threadID: String) -> ThreadOwnershipState {
+        BackgroundTurnRegistry.shared.ownershipState(threadID: threadID)
+    }
+
+    static func hasInProcessOwner(threadID: String) -> Bool {
+        BackgroundTurnRegistry.shared.contains(threadID: threadID)
+    }
+}
+
+private enum CodexQueueInvocation {
+    static func run(
+        threadID: String,
+        prompt: CodexPrompt,
+        cwd: URL,
+        isActive: Bool
+    ) throws -> CodexConversationResult {
+        guard let executableURL = CodexAppServerInvocation.locateCodexExecutable() else {
+            throw CodexConversationBridgeError.executableUnavailable
+        }
+        let stagedImages = try CodexQueuedImageFallback.stage(prompt.imageURLs)
+        let queuedPrompt = CodexPrompt(text: prompt.text, imageURLs: stagedImages)
+        let command = CodexQueueCommand.make(
+            executableURL: executableURL,
+            threadID: threadID,
+            prompt: queuedPrompt,
+            cwd: cwd
+        )
+        let process = Process()
+        let output = Pipe()
+        let errors = Pipe()
+        process.executableURL = command.executableURL
+        process.arguments = command.arguments
+        process.standardOutput = output
+        process.standardError = errors
+        try process.run()
+        process.waitUntilExit()
+
+        let outputText = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        let errorText = String(
+            decoding: errors.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        guard process.terminationStatus == 0 else {
+            let detail = [errorText, outputText]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty } ?? "Codex Queue 未接受这条消息。"
+            throw CodexConversationBridgeError.requestFailed(detail)
+        }
+        return CodexConversationResult(
+            threadID: threadID,
+            assistantText: isActive ? "指令已排队，将在当前任务后继续。" : "新一轮任务已交给 Codex。",
+            steeredActiveTurn: false
+        )
     }
 }
 
@@ -240,6 +374,10 @@ private final class BackgroundTurnRegistry: @unchecked Sendable {
 
     private struct Entry {
         let connection: UnixWebSocketJSONConnection
+        var ownership = ThreadOwnershipStateMachine()
+        var transferSignal: DispatchSemaphore?
+        var transferError: String?
+        var rollbackRequested = false
     }
 
     private let lock = NSLock()
@@ -283,25 +421,135 @@ private final class BackgroundTurnRegistry: @unchecked Sendable {
         return idle
     }
 
-    func release(threadID: String) -> (released: Bool, idle: Bool) {
+    func ownershipState(threadID: String) -> ThreadOwnershipState {
         lock.lock()
-        let entry = entries.removeValue(forKey: threadID)
+        let state = entries[threadID]?.ownership.state ?? .codex
+        lock.unlock()
+        return state
+    }
+
+    func contains(threadID: String) -> Bool {
+        lock.lock()
+        let contains = entries[threadID] != nil
+        lock.unlock()
+        return contains
+    }
+
+    func release(threadID: String, timeout: TimeInterval) -> CodexOwnershipReleaseResult {
+        let signal = DispatchSemaphore(value: 0)
+        lock.lock()
+        guard var entry = entries[threadID] else {
+            lock.unlock()
+            return .alreadyTransferred
+        }
+        guard entry.ownership.beginTransfer() else {
+            let state = entry.ownership.state
+            lock.unlock()
+            return state == .codex ? .alreadyTransferred : .failed("该任务正在转移，请勿重复操作")
+        }
+        entry.transferSignal = signal
+        entry.transferError = nil
+        entry.rollbackRequested = false
+        entries[threadID] = entry
+        lock.unlock()
+
+        do {
+            try entry.connection.send(
+                CodexConversationBridge.threadUnsubscribeRequest(threadID: threadID)
+            )
+        } catch {
+            rollback(threadID: threadID)
+            return .failed("退订请求发送失败：\(error.localizedDescription)")
+        }
+        guard signal.wait(timeout: .now() + timeout) == .success else {
+            let recoverySignal = DispatchSemaphore(value: 0)
+            lock.lock()
+            if var recoveringEntry = entries[threadID] {
+                recoveringEntry.rollbackRequested = true
+                recoveringEntry.transferSignal = recoverySignal
+                entries[threadID] = recoveringEntry
+            }
+            lock.unlock()
+            do {
+                try entry.connection.send([
+                    "method": "thread/resume",
+                    "id": 5,
+                    "params": ["threadId": threadID],
+                ])
+            } catch {
+                rollback(threadID: threadID)
+                return .failed("转移超时，恢复订阅失败：\(error.localizedDescription)")
+            }
+            guard recoverySignal.wait(timeout: .now() + timeout) == .success else {
+                rollback(threadID: threadID)
+                return .failed("转移超时，无法确认工作岛已恢复所有权")
+            }
+            return .failed("转移超时，工作岛已恢复该线程所有权")
+        }
+        lock.lock()
+        let result: CodexOwnershipReleaseResult
+        if let error = entries[threadID]?.transferError {
+            if var failedEntry = entries[threadID] {
+                _ = failedEntry.ownership.rollbackTransfer()
+                failedEntry.transferSignal = nil
+                entries[threadID] = failedEntry
+            }
+            result = .failed(error)
+        } else if var confirmedEntry = entries.removeValue(forKey: threadID) {
+            _ = confirmedEntry.ownership.confirmTransfer()
+            confirmedEntry.connection.close()
+            result = .released
+        } else {
+            result = .alreadyTransferred
+        }
         let idle = entries.isEmpty && activeInvocations == 0
         lock.unlock()
-        guard let entry else { return (false, idle) }
-        try? entry.connection.send(
-            CodexConversationBridge.threadUnsubscribeRequest(threadID: threadID)
-        )
-        // Give the durable server a brief chance to process the unsubscribe
-        // before closing the transport. The background reader may consume the
-        // acknowledgement, so waiting for it here would race with that reader.
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25) {
-            entry.connection.close()
-            if BackgroundTurnRegistry.shared.isIdle {
-                DurableCodexAppServer.stop()
-            }
+        if SharedAppServerLifetimePolicy.shouldStop(
+            workIslandOwnedThreadCount: idle ? 0 : 1
+        ) {
+            DurableCodexAppServer.stop()
         }
-        return (true, idle)
+        return result
+    }
+
+
+    func consumeTransferResponse(threadID: String, message: [String: Any]) -> Bool {
+        guard let responseID = (message["id"] as? NSNumber)?.intValue,
+              responseID == 4 || responseID == 5 else { return false }
+        lock.lock()
+        guard var entry = entries[threadID], entry.ownership.state == .transferring else {
+            lock.unlock()
+            return false
+        }
+        if responseID == 4, entry.rollbackRequested {
+            entries[threadID] = entry
+            lock.unlock()
+            return true
+        }
+        if let error = message["error"] as? [String: Any] {
+            entry.transferError = error["message"] as? String ?? "Codex 拒绝退订该线程"
+        }
+        if responseID == 5 {
+            _ = entry.ownership.rollbackTransfer()
+            entry.rollbackRequested = false
+        }
+        let signal = entry.transferSignal
+        entries[threadID] = entry
+        lock.unlock()
+        signal?.signal()
+        return responseID == 4 && entry.transferError == nil
+    }
+
+    private func rollback(threadID: String) {
+        lock.lock()
+        if var entry = entries[threadID] {
+            _ = entry.ownership.rollbackTransfer()
+            entry.transferSignal = nil
+            entry.transferError = nil
+            entry.rollbackRequested = false
+            entries[threadID] = entry
+        }
+        lock.unlock()
     }
 }
 
@@ -310,6 +558,45 @@ private enum CodexAppServerInvocation {
     private static let threadID = 2
     private static let turnID = 3
     private static let unsubscribeID = 4
+
+    static func unsubscribeDetached(
+        threadID: String,
+        timeout: TimeInterval
+    ) -> CodexOwnershipReleaseResult {
+        guard FileManager.default.fileExists(atPath: DurableCodexAppServer.socketURL.path) else {
+            return .alreadyTransferred
+        }
+        do {
+            let connection = try UnixWebSocketJSONConnection.connect(
+                to: DurableCodexAppServer.socketURL,
+                timeout: timeout
+            )
+            defer { connection.close() }
+            try connection.send([
+                "method": "initialize",
+                "id": initializeID,
+                "params": [
+                    "clientInfo": [
+                        "name": "codex-hermes-touch-bar-recovery",
+                        "title": "AI工作岛恢复",
+                        "version": "0.6.0",
+                    ],
+                ],
+            ])
+            _ = try waitForResponse(id: initializeID, connection: connection)
+            try connection.send(["method": "initialized", "params": [:]])
+            try connection.send(
+                CodexConversationBridge.threadUnsubscribeRequest(
+                    threadID: threadID,
+                    id: unsubscribeID
+                )
+            )
+            _ = try waitForResponse(id: unsubscribeID, connection: connection)
+            return .released
+        } catch {
+            return .failed("重启后恢复转移失败：\(error.localizedDescription)")
+        }
+    }
 
     static func run(
         prompt: CodexPrompt,
@@ -340,7 +627,7 @@ private enum CodexAppServerInvocation {
             "params": [
                 "clientInfo": [
                     "name": "codex-hermes-touch-bar",
-                    "title": "AI 工作岛",
+                    "title": "AI工作岛",
                     "version": "0.6.0",
                 ],
             ],
@@ -408,6 +695,8 @@ private enum CodexAppServerInvocation {
         let acceptedTurnID = responseTurnIdentifier(turnResponse) ?? activeTurnID
         if case .new = route {
             retainWorkIslandThread(resolvedThreadID)
+        }
+        if case .new = route {
             BackgroundTurnRegistry.shared.register(
                 threadID: resolvedThreadID,
                 connection: connection
@@ -423,6 +712,24 @@ private enum CodexAppServerInvocation {
                 threadID: resolvedThreadID,
                 assistantText: "会话已创建，任务正在执行。",
                 steeredActiveTurn: false
+            )
+        }
+        if case .appServerThread = route {
+            BackgroundTurnRegistry.shared.register(
+                threadID: resolvedThreadID,
+                connection: connection
+            )
+            handedOffToBackground = true
+            drainAcceptedTurnInBackground(
+                threadID: resolvedThreadID,
+                turnID: acceptedTurnID,
+                connection: connection,
+                imageURLs: prompt.imageURLs
+            )
+            return CodexConversationResult(
+                threadID: resolvedThreadID,
+                assistantText: activeTurnID == nil ? "新一轮任务已开始。" : "指令已追加到当前任务。",
+                steeredActiveTurn: activeTurnID != nil
             )
         }
         let assistantText = try readUntilTurnCompletes(
@@ -493,7 +800,7 @@ private enum CodexAppServerInvocation {
         try? data.write(to: file, options: .atomic)
     }
 
-    private static func locateCodexExecutable() -> URL? {
+    fileprivate static func locateCodexExecutable() -> URL? {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let candidates = [
             URL(fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"),
@@ -544,6 +851,12 @@ private enum CodexAppServerInvocation {
         var assistantText = ""
         while true {
             let message = try connection.nextObject()
+            if BackgroundTurnRegistry.shared.consumeTransferResponse(
+                threadID: threadID,
+                message: message
+            ) {
+                throw CodexConversationBridgeError.requestFailed("线程所有权已转交 Codex")
+            }
             let method = message["method"] as? String
             let params = message["params"] as? [String: Any]
             if method == "item/agentMessage/delta",
@@ -569,10 +882,28 @@ private final class UnixWebSocketJSONConnection: @unchecked Sendable {
         self.handle = handle
     }
 
-    static func connect(to socketURL: URL) throws -> UnixWebSocketJSONConnection {
+    static func connect(
+        to socketURL: URL,
+        timeout: TimeInterval? = nil
+    ) throws -> UnixWebSocketJSONConnection {
         let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else {
             throw CodexConversationBridgeError.requestFailed("无法创建本地任务连接")
+        }
+        if let timeout {
+            var value = timeval(
+                tv_sec: Int(timeout),
+                tv_usec: Int32((timeout - floor(timeout)) * 1_000_000)
+            )
+            withUnsafePointer(to: &value) { pointer in
+                _ = setsockopt(
+                    descriptor,
+                    SOL_SOCKET,
+                    SO_RCVTIMEO,
+                    pointer,
+                    socklen_t(MemoryLayout<timeval>.size)
+                )
+            }
         }
 
         var address = sockaddr_un()

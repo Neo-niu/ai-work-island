@@ -11,6 +11,18 @@ enum CodexThreadOpeningPolicy {
     }
 }
 
+enum WorkItemPrimaryAction: Equatable {
+    case codexThread
+    case issue
+    case destination
+
+    static func resolve(_ item: WorkItem) -> Self {
+        if item.id.hasPrefix("codex:") { return .codexThread }
+        if item.status.requiresAttention { return .issue }
+        return .destination
+    }
+}
+
 enum AppReopenPolicy {
     /// Repeated LaunchServices opens can come from background tooling or system
     /// services. The island is restored only by its capsule or menu actions.
@@ -25,6 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let desktopPanelVisibleDefaultsKey = "desktopPanelVisible"
     private static let backgroundPanelModeDefaultsKey = "backgroundPanelMode"
     private static let desktopContentModeDefaultsKey = "desktopContentMode"
+    private static let silentModeDefaultsKey = "silentMode"
+    private static let appearanceModeDefaultsKey = "appearanceMode"
     private static let recordingReminderCategory = "voice-memo-silence-reminder"
     private static let finishRecordingAction = "finish-and-keep-voice-memo"
     private static let continueRecordingAction = "continue-voice-memo"
@@ -41,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let accessibilityController = CodexAccessibilityController()
     private let updateController = GitHubUpdateController(
         repository: "Neo-niu/ai-work-island",
-        appName: "AI 工作岛"
+        appName: "AI工作岛"
     )
     private var statusItem: NSStatusItem?
     private var statusMenuItem: NSMenuItem?
@@ -50,9 +64,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var desktopPanelMenuItem: NSMenuItem?
     private var cleanContentModeMenuItem: NSMenuItem?
     private var detailedContentModeMenuItem: NSMenuItem?
+    private var silentModeMenuItem: NSMenuItem?
+    private var appearanceMenuItems: [AppAppearanceMode: NSMenuItem] = [:]
     private var finishVoiceMemoMenuItem: NSMenuItem?
     private var continueVoiceMemoMenuItem: NSMenuItem?
+    private var recordingHotKeyMenuItem: NSMenuItem?
     private var refreshTimer: Timer?
+    private var companyQuotaTimer: Timer?
     private var scheduledRefreshInterval: TimeInterval?
     private var refreshInFlight = false
     private var refreshPending = false
@@ -66,10 +84,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var threadStatusCycler = ThreadStatusCycler()
     private var latestHasActiveWork = false
     private var conversationInFlight = false
+    private var pendingCreatedThreads: [String: PendingCreatedThread] = [:]
     private var cardConversationsInFlight: Set<String> = []
+    private var ownershipTransfersInFlight: Set<String> = []
+    private var pendingRestartRecoveryTransferThreadID: String?
     private var voiceMemoGuardianState: VoiceMemoGuardianState?
     private var didRequestRecordingNotificationAuthorization = false
     private var recordingNotificationsAuthorized = false
+    private var voiceMemoRenameInFlight = false
+    private var lastVoiceMemoRenameAttempt = Date.distantPast
+
+    private var isSilentMode: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.silentModeDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.silentModeDefaultsKey) }
+    }
+
+    private var appearanceMode: AppAppearanceMode {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: Self.appearanceModeDefaultsKey) else {
+                return .system
+            }
+            return AppAppearanceMode(rawValue: raw) ?? .system
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: Self.appearanceModeDefaultsKey) }
+    }
 
     private var isEnabled: Bool {
         get {
@@ -136,12 +174,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // are exposed only through macOS Accessibility.
         _ = accessibilityController.requestAccessibilityAccess()
         recordingHotKey.onPressed = { [weak self] in
-            self?.startVoiceMemoRecording()
+            self?.performRecordingHotKeyAction()
         }
         voiceMemoGuardian.onStateChanged = { [weak self] state in
             guard let self else { return }
             voiceMemoGuardianState = state
             desktopPanelController.updateRecordingGuardian(state)
+            updateRecordingHotKeyMenuItem(isRecording: state != nil)
             finishVoiceMemoMenuItem?.isHidden = state == nil
             continueVoiceMemoMenuItem?.isHidden = state?.phase != .silence
             if state != nil { requestRecordingNotificationAuthorizationIfNeeded() }
@@ -199,6 +238,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         desktopPanelController.onNewConversationDirectorySelected = { [weak self] in
             self?.chooseProjectForNewConversation()
         }
+        desktopPanelController.onStopRecordingSelected = { [weak self] in
+            self?.finishVoiceMemoRecording()
+        }
         desktopPanelController.onVisibilityChanged = { [weak self] visible in
             guard let self else { return }
             self.isDesktopPanelVisible = visible
@@ -207,6 +249,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         desktopPanelController.setDisplayMode(isBackgroundPanelMode ? .background : .floating)
         desktopPanelController.setContentMode(desktopContentMode)
+        desktopPanelController.suppressesAutomaticReveals = isSilentMode
+        desktopPanelController.setAppearanceMode(appearanceMode)
 
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
@@ -216,6 +260,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         updateRefreshSchedule()
         requestRefresh()
+        startCompanyQuotaRefreshSchedule()
+        requestCompanyQuotaRefresh()
         updatePresentation()
         if ProcessInfo.processInfo.arguments.contains("--ui-review-panel") {
             desktopPanelController.show()
@@ -241,6 +287,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         refreshTimer?.invalidate()
+        companyQuotaTimer?.invalidate()
         voiceMemoGuardian.stop()
         recordingHotKey.unregister()
         touchBarController.dismiss()
@@ -297,8 +344,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         backgroundPanelModeMenuItem.state = isBackgroundPanelMode ? .on : .off
         menu.addItem(backgroundPanelModeMenuItem)
 
-        let contentModeItem = NSMenuItem(title: "任务信息密度", action: nil, keyEquivalent: "")
-        let contentModeMenu = NSMenu(title: "任务信息密度")
+        let silentModeMenuItem = NSMenuItem(
+            title: "静默运行（开会 / 投屏）",
+            action: #selector(toggleSilentMode(_:)),
+            keyEquivalent: ""
+        )
+        silentModeMenuItem.target = self
+        silentModeMenuItem.state = isSilentMode ? .on : .off
+        menu.addItem(silentModeMenuItem)
+
+        let appearanceItem = NSMenuItem(title: "外观", action: nil, keyEquivalent: "")
+        let appearanceMenu = NSMenu(title: "外观")
+        for mode in AppAppearanceMode.allCases {
+            let item = NSMenuItem(
+                title: mode.title,
+                action: #selector(selectAppearanceMode(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = mode.rawValue
+            item.state = appearanceMode == mode ? .on : .off
+            appearanceMenu.addItem(item)
+            appearanceMenuItems[mode] = item
+        }
+        appearanceItem.submenu = appearanceMenu
+        menu.addItem(appearanceItem)
+
+        let contentModeItem = NSMenuItem(title: "任务进度显示", action: nil, keyEquivalent: "")
+        let contentModeMenu = NSMenu(title: "任务进度显示")
         let cleanContentModeMenuItem = NSMenuItem(
             title: DesktopContentMode.clean.title,
             action: #selector(selectCleanContentMode),
@@ -327,8 +400,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(openStatusDirectoryItem)
 
         let startVoiceMemoItem = NSMenuItem(
-            title: "开始语音备忘录（全局 ⌥⌘R）",
-            action: #selector(startVoiceMemoFromMenu),
+            title: "开始语音备忘录（全局 Caps Lock + R）",
+            action: #selector(performRecordingHotKeyActionFromMenu),
             keyEquivalent: "r"
         )
         startVoiceMemoItem.keyEquivalentModifierMask = [.command, .option]
@@ -366,7 +439,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         restartItem.target = self
         menu.addItem(restartItem)
 
-        let quitItem = NSMenuItem(title: "退出 AI 工作岛", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "退出 AI工作岛", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -378,8 +451,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.desktopPanelMenuItem = desktopPanelMenuItem
         self.cleanContentModeMenuItem = cleanContentModeMenuItem
         self.detailedContentModeMenuItem = detailedContentModeMenuItem
+        self.silentModeMenuItem = silentModeMenuItem
         self.finishVoiceMemoMenuItem = finishVoiceMemoItem
         self.continueVoiceMemoMenuItem = continueVoiceMemoItem
+        self.recordingHotKeyMenuItem = startVoiceMemoItem
 
         if !touchBarController.isAvailable {
             statusMenuItem.title = "当前系统不支持 Touch Bar 常驻接口"
@@ -389,6 +464,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func requestRefresh() {
+        processPendingVoiceMemoRenameIfNeeded()
         guard !refreshInFlight else {
             refreshPending = true
             return
@@ -404,8 +480,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let selectedProjectName = self.isCodexFrontmost
                 ? self.accessibilityController.selectedSidebarProjectName()
                 : nil
+            let continuity = CreatedThreadContinuity.reconcile(
+                scannedThreads: snapshot.threads,
+                pending: self.pendingCreatedThreads
+            )
+            self.pendingCreatedThreads = continuity.pending
             let groups = grouper.groups(
-                from: snapshot.threads,
+                from: continuity.threads,
                 selectedProjectRoots: snapshot.selectedProjectRoots,
                 selectedProjectName: selectedProjectName
             )
@@ -417,10 +498,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 automationResult: automationResult
             )
             self.refreshInFlight = false
-            self.requestCompanyQuotaRefresh()
             if self.refreshPending {
                 self.refreshPending = false
                 self.requestRefresh()
+            }
+        }
+    }
+
+    private func processPendingVoiceMemoRenameIfNeeded() {
+        guard !voiceMemoRenameInFlight,
+              Date().timeIntervalSince(lastVoiceMemoRenameAttempt) >= 15 else { return }
+        voiceMemoRenameInFlight = true
+        lastVoiceMemoRenameAttempt = Date()
+        Task { [weak self] in
+            guard let self else { return }
+            defer { voiceMemoRenameInFlight = false }
+            do {
+                if try await voiceMemoLauncher.processNextRenameRequest() {
+                    showTransientStatus("已按会议内容更新录音名称")
+                }
+            } catch {
+                // Keep the request for a later retry; minutes delivery must not be blocked.
             }
         }
     }
@@ -436,6 +534,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.latestCompanyQuota = quota
             self.requestRefresh()
         }
+    }
+
+    private func startCompanyQuotaRefreshSchedule() {
+        companyQuotaTimer?.invalidate()
+        let timer = Timer(
+            timeInterval: RefreshPolicy.companyQuotaInterval,
+            target: self,
+            selector: #selector(companyQuotaTimerFired),
+            userInfo: nil,
+            repeats: true
+        )
+        RunLoop.main.add(timer, forMode: RefreshPolicy.timerRunLoopMode)
+        companyQuotaTimer = timer
     }
 
     private func apply(
@@ -481,6 +592,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             codexWeeklyLimit: weeklyLimit,
             companyQuota: companyQuota
         ))
+        updateRefreshSchedule()
+        processPendingRestartRecoveryTransfer(in: rawGroups)
         updateStatusText()
     }
 
@@ -525,7 +638,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             isDashboardVisible: shouldRefresh,
             hasActiveWork: latestHasActiveWork
         )
-        guard scheduledRefreshInterval != interval else { return }
+        guard RefreshPolicy.shouldReplaceTimer(
+            scheduledInterval: scheduledRefreshInterval,
+            desiredInterval: interval,
+            timerIsValid: refreshTimer?.isValid == true
+        ) else { return }
         refreshTimer?.invalidate()
         refreshTimer = nil
         scheduledRefreshInterval = interval
@@ -656,19 +773,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func openWorkItem(_ item: WorkItem) {
-        if item.status.requiresAttention {
+        switch WorkItemPrimaryAction.resolve(item) {
+        case .issue:
             showWorkItemIssue(item)
             return
-        }
-        if item.id.hasPrefix("codex:"),
-           let thread = latestGroups?.flatMap(\.threads).first(where: {
-               "codex:\($0.id)" == item.id
-           }) {
+        case .codexThread:
+            guard let thread = latestGroups?.flatMap(\.threads).first(where: {
+                "codex:\($0.id)" == item.id
+            }) else {
+                showTransientStatus("该任务当前无法转到 Codex")
+                return
+            }
             openThreadFromUserSelection(
                 thread,
                 successMessage: "已打开 Codex 会话"
             )
             return
+        case .destination:
+            break
         }
         if let rawURL = item.openURL, let url = URL(string: rawURL) {
             NSWorkspace.shared.open(url)
@@ -693,25 +815,89 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func transferThreadToCodex(_ thread: ActiveThread) {
-        if hasOtherActiveWorkIslandThread(excluding: thread.id) {
-            showTransientStatus("其他工作岛任务仍在运行，结束后自动转到 Codex", duration: 8)
-            waitForWorkIslandTransferReadiness(thread, remainingAttempts: 1_200)
+        guard !ownershipTransfersInFlight.contains(thread.id) else {
+            desktopPanelController.updateCodexCardStatus(
+                itemID: "codex:\(thread.id)",
+                text: "正在转移到 Codex，请勿重复操作",
+                isBusy: true
+            )
             return
         }
         beginWorkIslandTransfer(thread)
     }
 
     private func beginWorkIslandTransfer(_ thread: ActiveThread) {
-        switch CodexConversationBridge.releaseWorkIslandOwnership(threadID: thread.id) {
-        case .ready:
-            showTransientStatus("正在释放工作岛占用…")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-                self?.openThread(thread, successMessage: "已转到 Codex")
-            }
-        case .waitingForOtherWorkIslandTasks:
-            showTransientStatus("其他工作岛任务仍在运行，结束后自动转到 Codex", duration: 8)
-            waitForWorkIslandTransferReadiness(thread, remainingAttempts: 1_200)
+        let hasInProcessOwner = CodexConversationBridge.hasInProcessOwner(threadID: thread.id)
+        let hasOtherActiveThread = hasOtherActiveWorkIslandThread(excluding: thread.id)
+        guard !RestartRecoveryTransferPolicy.shouldWaitForPeerTasks(
+            hasInProcessOwner: hasInProcessOwner,
+            hasOtherActiveWorkIslandThread: hasOtherActiveThread
+        ) else {
+            pendingRestartRecoveryTransferThreadID = thread.id
+            let message = "其他任务完成后将自动转到 Codex"
+            desktopPanelController.updateCodexCardStatus(
+                itemID: "codex:\(thread.id)",
+                text: message,
+                isBusy: true
+            )
+            showTransientStatus(message, duration: 12)
+            return
         }
+        pendingRestartRecoveryTransferThreadID = nil
+        ownershipTransfersInFlight.insert(thread.id)
+        desktopPanelController.updateCodexCardStatus(
+            itemID: "codex:\(thread.id)",
+            text: "正在释放该线程的工作岛所有权…",
+            isBusy: true
+        )
+        showTransientStatus("正在释放该线程的工作岛所有权…")
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await CodexConversationBridge.releaseWorkIslandOwnership(
+                threadID: thread.id
+            )
+            ownershipTransfersInFlight.remove(thread.id)
+            switch result {
+            case .released, .alreadyTransferred:
+                // After an app restart the original client connection is gone, so
+                // unsubscribing from a recovery connection does not necessarily
+                // unload the thread held by the durable App Server. When this is
+                // the only remaining work-island task, stop that server before
+                // dispatching the deep link so Codex can acquire the thread.
+                if RestartRecoveryTransferPolicy.canStopServerBeforeOpening(
+                    hasInProcessOwner: hasInProcessOwner,
+                    hasOtherActiveWorkIslandThread: hasOtherActiveThread
+                ) {
+                    DurableCodexAppServer.stop()
+                }
+                openThread(thread, successMessage: "已转到 Codex")
+            case let .failed(message):
+                desktopPanelController.updateCodexCardStatus(
+                    itemID: "codex:\(thread.id)",
+                    text: message
+                )
+                showTransientStatus(message, duration: 12)
+                NSSound.beep()
+            }
+        }
+    }
+
+    private func processPendingRestartRecoveryTransfer(in groups: [ProjectGroup]) {
+        guard let threadID = pendingRestartRecoveryTransferThreadID,
+              !ownershipTransfersInFlight.contains(threadID),
+              let thread = groups.lazy.flatMap(\.threads).first(where: { $0.id == threadID }) else {
+            return
+        }
+        guard !hasOtherActiveWorkIslandThread(excluding: threadID) else {
+            desktopPanelController.updateCodexCardStatus(
+                itemID: "codex:\(threadID)",
+                text: "其他任务完成后将自动转到 Codex",
+                isBusy: true
+            )
+            return
+        }
+        pendingRestartRecoveryTransferThreadID = nil
+        beginWorkIslandTransfer(thread)
     }
 
     private func hasOtherActiveWorkIslandThread(excluding threadID: String) -> Bool {
@@ -735,28 +921,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return []
         }
         return Set(ids)
-    }
-
-    private func waitForWorkIslandTransferReadiness(
-        _ thread: ActiveThread,
-        remainingAttempts: Int
-    ) {
-        guard remainingAttempts > 0 else {
-            showTransientStatus("其他工作岛任务仍在运行；请稍后重试", duration: 8)
-            return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self else { return }
-            if CodexConversationBridge.isReadyForDesktopTransfer,
-               !self.hasOtherActiveWorkIslandThread(excluding: thread.id) {
-                self.beginWorkIslandTransfer(thread)
-            } else {
-                self.waitForWorkIslandTransferReadiness(
-                    thread,
-                    remainingAttempts: remainingAttempts - 1
-                )
-            }
-        }
     }
 
     private func showWorkItemIssue(_ item: WorkItem) {
@@ -863,9 +1027,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [weak self] in
             guard let self else { return }
             do {
-                _ = try await CodexConversationBridge.send(
+                let result = try await CodexConversationBridge.send(
                     prompt: prompt,
                     route: .new(cwd: projectURL)
+                )
+                let now = Date()
+                let title = prompt.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let fallback = ActiveThread(
+                    id: result.threadID,
+                    title: title.isEmpty ? "图片任务" : title,
+                    cwd: projectURL,
+                    startedAt: now,
+                    updatedAt: now
+                )
+                pendingCreatedThreads[result.threadID] = PendingCreatedThread(
+                    thread: fallback,
+                    expiresAt: now.addingTimeInterval(30 * 60)
                 )
                 showTransientStatus("\(projectURL.lastPathComponent) 会话已创建")
                 requestRefresh()
@@ -881,6 +1058,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func submitCodexCardPrompt(itemID: String, prompt: CodexPrompt) {
+        let threadID = String(itemID.dropFirst("codex:".count))
+        guard !ownershipTransfersInFlight.contains(threadID),
+              CodexConversationBridge.ownershipState(threadID: threadID) != .transferring else {
+            desktopPanelController.updateCodexCardStatus(
+                itemID: itemID,
+                text: "正在转移到 Codex，工作岛已停止发送指令",
+                isBusy: true
+            )
+            return
+        }
         guard !cardConversationsInFlight.contains(itemID) else {
             desktopPanelController.updateCodexCardStatus(
                 itemID: itemID,
@@ -889,7 +1076,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             return
         }
-        let threadID = String(itemID.dropFirst("codex:".count))
         guard let thread = latestGroups?.flatMap(\.threads).first(where: { $0.id == threadID }) else {
             desktopPanelController.updateCodexCardStatus(itemID: itemID, text: "该项目会话当前不可用")
             NSSound.beep()
@@ -906,13 +1092,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             defer { Self.removeTemporaryImages(prompt.imageURLs) }
             do {
-                let result = try await CodexConversationBridge.send(
-                    prompt: prompt,
-                    route: .desktopThread(
-                        threadID: thread.id,
-                        cwd: thread.cwd,
-                        isActive: thread.isActive
-                    )
+                let result = try await sendCodexCardPrompt(
+                    prompt,
+                    to: thread
                 )
                 desktopPanelController.updateCodexCardStatus(
                     itemID: itemID,
@@ -928,6 +1110,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             cardConversationsInFlight.remove(itemID)
         }
+    }
+
+    private func sendCodexCardPrompt(
+        _ prompt: CodexPrompt,
+        to thread: ActiveThread
+    ) async throws -> CodexConversationResult {
+        let route = CodexCardContinuationPolicy.route(
+            threadID: thread.id,
+            cwd: thread.cwd,
+            isActive: thread.isActive
+        )
+        return try await CodexConversationBridge.send(prompt: prompt, route: route)
     }
 
     private static func removeTemporaryImages(_ urls: [URL]) {
@@ -959,17 +1153,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func startVoiceMemoFromMenu() {
-        startVoiceMemoRecording()
+    private func performRecordingHotKeyAction() {
+        switch RecordingHotKeyIntent.resolve(isRecording: voiceMemoGuardianState != nil) {
+        case .start:
+            startVoiceMemoRecording()
+        case .stopAndKeep:
+            finishVoiceMemoRecording()
+        }
+    }
+
+    @objc private func performRecordingHotKeyActionFromMenu() {
+        performRecordingHotKeyAction()
+    }
+
+    private func updateRecordingHotKeyMenuItem(isRecording: Bool) {
+        recordingHotKeyMenuItem?.title = isRecording
+            ? "停止录音并保留（全局 Caps Lock + R）"
+            : "开始语音备忘录（全局 Caps Lock + R）"
     }
 
     private func finishVoiceMemoRecording() {
+        desktopPanelController.updateRecordingStopInProgress(true)
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await voiceMemoLauncher.finishAndKeep()
+                voiceMemoGuardian.recordingDidFinish()
                 showTransientStatus("录音已结束并保留；将自动进入会议纪要流程")
             } catch {
+                desktopPanelController.updateRecordingStopInProgress(false)
                 if case VoiceMemoLauncher.LauncherError.accessibilityRequired = error {
                     _ = accessibilityController.requestAccessibilityAccess()
                 }
@@ -1019,6 +1231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showRecordingSilenceReminder(_ state: VoiceMemoGuardianState) {
+        guard !isSilentMode else { return }
         guard recordingNotificationsAuthorized else {
             showRecordingSilenceAlert()
             return
@@ -1060,6 +1273,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func refreshTimerFired() {
         requestRefresh()
+        // Keep quota refresh tied to the app's proven-active polling loop as
+        // well as its dedicated timer. CompanyQuotaScanner enforces the
+        // five-minute network interval, so this is cheap between due scans
+        // and recovers if AppKit coalesces or drops the long-running timer.
+        requestCompanyQuotaRefresh()
+    }
+
+    @objc private func companyQuotaTimerFired() {
+        requestCompanyQuotaRefresh()
     }
 
     @objc private func toggleEnabled(_ sender: NSMenuItem) {
@@ -1084,6 +1306,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             requestRefresh()
         }
         updatePresentation()
+    }
+
+    @objc private func toggleSilentMode(_ sender: NSMenuItem) {
+        isSilentMode.toggle()
+        sender.state = isSilentMode ? .on : .off
+        desktopPanelController.suppressesAutomaticReveals = isSilentMode
+        if isSilentMode {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(
+                withIdentifiers: pendingRecordingNotificationIdentifiers()
+            )
+            showTransientStatus("已开启静默运行")
+        } else {
+            showTransientStatus("已关闭静默运行")
+        }
+    }
+
+    @objc private func selectAppearanceMode(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let mode = AppAppearanceMode(rawValue: raw) else { return }
+        appearanceMode = mode
+        for (candidate, item) in appearanceMenuItems {
+            item.state = candidate == mode ? .on : .off
+        }
+        desktopPanelController.setAppearanceMode(mode)
+        showTransientStatus("外观：\(mode.title)")
+    }
+
+    private func pendingRecordingNotificationIdentifiers() -> [String] {
+        guard let state = voiceMemoGuardianState else { return [] }
+        return ["voice-memo-silence-\(Int(state.startedAt.timeIntervalSince1970))"]
     }
 
     @objc private func toggleDesktopPanel(_ sender: NSMenuItem) {

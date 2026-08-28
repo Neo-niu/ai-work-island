@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "AIWorkIsland",
+    name: "AI工作岛",
     platforms: [
         .macOS(.v13),
     ],
@@ -53,7 +53,8 @@ let package = Package(
         .testTarget(
             name: "CodexTouchBarUITests",
             dependencies: ["CodexTouchBar", "CodexTouchBarCore"],
-            path: "Tests/CodexTouchBarUITests"
+            path: "Tests/CodexTouchBarUITests",
+            exclude: ["__Snapshots__"]
         ),
     ]
 )

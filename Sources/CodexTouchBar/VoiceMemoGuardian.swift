@@ -99,6 +99,10 @@ final class VoiceMemoGuardian {
         poll()
     }
 
+    func recordingDidFinish() {
+        reset()
+    }
+
     @objc private func timerFired() {
         poll()
     }
@@ -156,6 +160,13 @@ final class VoiceMemoGuardian {
             return nil
         }
         let root = AXUIElementCreateApplication(application.processIdentifier)
+        let windows = attribute(kAXWindowsAttribute, from: root) as? [AXUIElement] ?? []
+        let minimizedStates = windows.map {
+            attribute(kAXMinimizedAttribute, from: $0) as? Bool
+        }
+        guard Self.shouldInspectRecordingControls(windowMinimizedStates: minimizedStates) else {
+            return recordingStartedAt
+        }
         guard containsButton(in: root, descriptions: ["暂停", "Pause"]) else {
             return nil
         }
@@ -167,6 +178,14 @@ final class VoiceMemoGuardian {
         return Calendar.current.date(bySettingHour: pieces[0], minute: pieces[1], second: 0, of: now)
             ?? recordingStartedAt
             ?? now
+    }
+
+    static func shouldInspectRecordingControls(windowMinimizedStates: [Bool?]) -> Bool {
+        guard !windowMinimizedStates.isEmpty,
+              windowMinimizedStates.allSatisfy({ $0 != nil }) else {
+            return true
+        }
+        return windowMinimizedStates.contains(false)
     }
 
     private func containsButton(

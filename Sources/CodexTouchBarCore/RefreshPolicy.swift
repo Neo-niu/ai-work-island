@@ -2,6 +2,7 @@ import Foundation
 
 public enum RefreshPolicy {
     public static let timerRunLoopMode = RunLoop.Mode.common
+    public static let companyQuotaInterval: TimeInterval = 5 * 60
 
     public static func pollInterval(
         isDashboardVisible: Bool,
@@ -13,5 +14,13 @@ public enum RefreshPolicy {
 
     public static func shouldApply(previous: [ProjectGroup]?, next: [ProjectGroup]) -> Bool {
         previous != next
+    }
+
+    public static func shouldReplaceTimer(
+        scheduledInterval: TimeInterval?,
+        desiredInterval: TimeInterval,
+        timerIsValid: Bool
+    ) -> Bool {
+        scheduledInterval != desiredInterval || !timerIsValid
     }
 }

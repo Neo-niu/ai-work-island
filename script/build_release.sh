@@ -2,13 +2,13 @@
 set -euo pipefail
 
 PRODUCT_NAME="CodexTouchBar"
-DISPLAY_NAME="AI 工作岛"
+DISPLAY_NAME="AI工作岛"
 BUNDLE_ID="dev.kanyun.CodexHermesTouchBar"
 DEFAULT_SIGN_IDENTITY="Developer ID Application: Burak Karahan (UPK4SC93AN)"
 DEFAULT_NOTARY_PROFILE="desktop-updater-notary"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VERSION="${1:-0.5.18}"
+VERSION="${1:-0.5.19}"
 VERSION="${VERSION#v}"
 RELEASE_TAG="${GITHUB_RELEASE_TAG:-v$VERSION}"
 SIGN_IDENTITY="${CODE_SIGN_IDENTITY:-$DEFAULT_SIGN_IDENTITY}"
