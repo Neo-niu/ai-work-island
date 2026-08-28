@@ -12,8 +12,29 @@ import Testing
     #expect(RefreshPolicy.timerRunLoopMode == .common)
 }
 
+@Test func invalidRefreshTimerIsReplacedEvenWhenItsIntervalDidNotChange() {
+    #expect(RefreshPolicy.shouldReplaceTimer(
+        scheduledInterval: 1,
+        desiredInterval: 1,
+        timerIsValid: false
+    ))
+    #expect(!RefreshPolicy.shouldReplaceTimer(
+        scheduledInterval: 1,
+        desiredInterval: 1,
+        timerIsValid: true
+    ))
+}
+
 @Test func companyQuotaRefreshesEveryFiveMinutes() {
     #expect(RefreshPolicy.companyQuotaInterval == 300)
+}
+
+@Test func regularPollingCannotDelayCompanyQuotaPastItsRefreshInterval() {
+    let slowestRegularPoll = RefreshPolicy.pollInterval(
+        isDashboardVisible: false,
+        hasActiveWork: false
+    )
+    #expect(slowestRegularPoll < RefreshPolicy.companyQuotaInterval)
 }
 
 @Test func refreshPolicySkipsAnUnchangedTouchBarModel() {

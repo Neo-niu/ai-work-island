@@ -247,14 +247,7 @@ public actor CodexIPCClient {
             let message = try readMessage(from: descriptor)
             if message["type"] as? String == "client-discovery-request",
                let discoveryID = message["requestId"] as? String {
-                try send(
-                    [
-                        "type": "client-discovery-response",
-                        "requestId": discoveryID,
-                        "response": ["canHandle": false],
-                    ],
-                    to: descriptor
-                )
+                try send(CodexIPCFrameCodec.clientDiscoveryResponse(requestID: discoveryID), to: descriptor)
                 continue
             }
             if message["type"] as? String == "response",
@@ -310,15 +303,25 @@ public actor CodexIPCClient {
     }
 }
 
-enum CodexIPCFrameCodec {
-    static func encode(_ payload: Data) -> Data {
+public enum CodexIPCFrameCodec {
+    public static func clientDiscoveryResponse(requestID: String) -> [String: Any] {
+        [
+            "type": "client-discovery-response",
+            "requestId": requestID,
+            // This connection only originates requests; it does not implement
+            // handlers for requests forwarded from other IPC clients.
+            "response": ["canHandle": false],
+        ]
+    }
+
+    public static func encode(_ payload: Data) -> Data {
         var length = UInt32(payload.count).littleEndian
         var frame = withUnsafeBytes(of: &length) { Data($0) }
         frame.append(payload)
         return frame
     }
 
-    static func payloadLength(header: Data) -> Int {
+    public static func payloadLength(header: Data) -> Int {
         guard header.count == 4 else { return 0 }
         return header.withUnsafeBytes { rawBuffer in
             let bytes = rawBuffer.bindMemory(to: UInt8.self)

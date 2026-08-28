@@ -15,4 +15,12 @@ public enum RefreshPolicy {
     public static func shouldApply(previous: [ProjectGroup]?, next: [ProjectGroup]) -> Bool {
         previous != next
     }
+
+    public static func shouldReplaceTimer(
+        scheduledInterval: TimeInterval?,
+        desiredInterval: TimeInterval,
+        timerIsValid: Bool
+    ) -> Bool {
+        scheduledInterval != desiredInterval || !timerIsValid
+    }
 }

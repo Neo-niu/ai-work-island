@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import ApplicationServices
+import Carbon.HIToolbox
 @testable import CodexTouchBar
 
 @MainActor @Test("录音守护不读取已最小化窗口的控件树")
@@ -18,6 +19,34 @@ func recordingGuardianSkipsMinimizedWindows() {
 
 @Test func recordingHotKeyStopsAndKeepsWhenRecording() {
     #expect(RecordingHotKeyIntent.resolve(isRecording: true) == .stopAndKeep)
+}
+
+@MainActor @Test func recordingHotKeyUsesCapsLockAndR() {
+    #expect(GlobalRecordingHotKey.keyCode == UInt16(kVK_ANSI_R))
+    #expect(GlobalRecordingHotKey.displayName == "Caps Lock + R")
+    #expect(GlobalRecordingHotKey.matches(
+        keyCode: UInt16(kVK_ANSI_R), modifierFlags: [.capsLock], isRepeat: false
+    ))
+    #expect(GlobalRecordingHotKey.matches(
+        keyCode: UInt16(kVK_ANSI_R),
+        modifierFlags: [.command, .option, .control, .shift],
+        isRepeat: false
+    ))
+    #expect(!GlobalRecordingHotKey.matches(
+        keyCode: UInt16(kVK_ANSI_R), modifierFlags: [.capsLock, .command], isRepeat: false
+    ))
+    #expect(!GlobalRecordingHotKey.matches(
+        keyCode: UInt16(kVK_ANSI_R), modifierFlags: [.capsLock], isRepeat: true
+    ))
+    #expect(!GlobalRecordingHotKey.matches(
+        keyCode: UInt16(kVK_ANSI_T), modifierFlags: [.capsLock], isRepeat: false
+    ))
+}
+
+@MainActor @Test func capsLockRCanBeRegisteredAsAGlobalHotKey() throws {
+    let hotKey = GlobalRecordingHotKey()
+    try hotKey.register()
+    hotKey.unregister()
 }
 
 @MainActor @Test func recordingControlsMatchLocalizedLabelsOrStableIdentifiers() {

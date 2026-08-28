@@ -98,9 +98,13 @@ public extension WorkItem {
             guard !line.isEmpty else { continue }
             let normalized = line.lowercased()
             guard !ignoredPrefixes.contains(where: normalized.hasPrefix) else { continue }
+            let meaningful = line.unicodeScalars.contains {
+                CharacterSet.alphanumerics.contains($0)
+            }
+            guard meaningful else { continue }
             return line
         }
-        return source
+        return id.hasPrefix("codex:") ? "会话名称同步中" : source
     }
 
     var displayDetail: String {

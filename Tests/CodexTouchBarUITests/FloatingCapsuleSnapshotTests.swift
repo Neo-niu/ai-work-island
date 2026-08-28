@@ -39,6 +39,28 @@ struct FloatingCapsuleSnapshotTests {
         }
     }
 
+    @Test func compactCompletionSummary() throws {
+        let view = FloatingStatusButtonView(
+            frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.completionSize)
+        )
+        view.appearance = NSAppearance(named: .aqua)
+        view.showCompletion(
+            item: WorkItem(
+                id: "codex:completion-review",
+                source: "Codex",
+                title: "优化工作区通知排版",
+                status: .completed,
+                updatedAt: fixedNow,
+                phase: "验证安装版",
+                phaseIndex: 3,
+                phaseCount: 3
+            ),
+            result: nil
+        )
+        settle(view)
+        try assertVisualSnapshot(of: view, named: "21-completion-summary")
+    }
+
     private func makeView(items: [WorkItem]) -> FloatingStatusButtonView {
         let view = FloatingStatusButtonView(frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.size))
         view.appearance = NSAppearance(named: .darkAqua)
@@ -96,8 +118,15 @@ struct FloatingCapsuleSnapshotTests {
 
     private func settle(_ view: NSView) {
         view.layoutSubtreeIfNeeded()
-        view.layer?.removeAllAnimations()
-        view.layer?.sublayers?.forEach { $0.removeAllAnimations() }
+        removeAnimationsRecursively(from: view.layer)
+        CATransaction.flush()
+        view.layoutSubtreeIfNeeded()
+    }
+
+    private func removeAnimationsRecursively(from layer: CALayer?) {
+        guard let layer else { return }
+        layer.removeAllAnimations()
+        layer.sublayers?.forEach { removeAnimationsRecursively(from: $0) }
     }
 
     private func assertVisualSnapshot(of view: NSView, named name: String) throws {

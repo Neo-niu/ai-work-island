@@ -138,10 +138,11 @@ import Testing
 
 @Test func desktopPanelWidthDoesNotDependOnTaskCount() {
     #expect(DesktopPanelLayout.contentSize(visibleItemCount: 0).width == 480)
+    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 0).height == 205)
     #expect(DesktopPanelLayout.contentSize(visibleItemCount: 1).width == 480)
     #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7).width == 480)
-    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7).height == 606)
-    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7, sectionCount: 4).height == 694)
+    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7).height == 587)
+    #expect(DesktopPanelLayout.contentSize(visibleItemCount: 7, sectionCount: 4).height == 675)
 }
 
 @Test func desktopPanelPrioritizesLiveWorkBeforeCreationAndQuota() {
@@ -152,6 +153,7 @@ import Testing
 
 @Test func activityTypographyUsesOneLeftReadingEdgeAndLegibleMetadata() {
     #expect(DesktopPanelTypography.activityAlignment == .left)
+    #expect(DesktopPanelTypography.metadataAlignment == .left)
     #expect(DesktopPanelTypography.metadataFontSize >= 11)
     #expect(DesktopPanelTypography.sectionFontSize >= 11)
 }
@@ -198,12 +200,29 @@ import Testing
     #expect(presentation.lowestRemainingPercent == 10)
 }
 
+@Test func desktopQuotaSummaryKeepsCriticalColorSubdued() {
+    let critical = DesktopQuotaSummaryStyle.textColor(lowestRemainingPercent: 10)
+    let warning = DesktopQuotaSummaryStyle.textColor(lowestRemainingPercent: 35)
+    let healthy = DesktopQuotaSummaryStyle.textColor(lowestRemainingPercent: 70)
+
+    #expect(critical.alphaComponent == 0.68)
+    #expect(warning.alphaComponent == 0.78)
+    #expect(healthy == .tertiaryLabelColor)
+}
+
 @Test func attentionCardsKeepOnePrimaryActionVisible() {
     #expect(WorkItemCardActionPolicy.showsPersistentPrimaryAction(status: .waiting))
     #expect(WorkItemCardActionPolicy.showsPersistentPrimaryAction(status: .failed))
     #expect(WorkItemCardActionPolicy.showsPersistentPrimaryAction(status: .stale))
     #expect(!WorkItemCardActionPolicy.showsPersistentPrimaryAction(status: .running))
     #expect(!WorkItemCardActionPolicy.showsPersistentPrimaryAction(status: .completed))
+}
+
+@Test func taskCardActionsHaveComfortableTargets() {
+    #expect(WorkItemCardActionLayout.primaryHeight == 28)
+    #expect(WorkItemCardActionLayout.primaryMinimumWidth == 76)
+    #expect(WorkItemCardActionLayout.iconHitSize == 28)
+    #expect(WorkItemCardActionLayout.iconPointSize == 15)
 }
 
 @Test func conversationCardUsesTheAvailablePanelWidth() {
@@ -238,8 +257,8 @@ import Testing
         contentMode: .detailed
     )
 
-    #expect(DesktopContentMode.clean.title == "清爽模式")
-    #expect(DesktopContentMode.detailed.title == "详细模式")
+    #expect(DesktopContentMode.clean.title == "精简 · 最近 4 条进度")
+    #expect(DesktopContentMode.detailed.title == "详细 · 最近 6 条进度")
     #expect(DesktopContentMode.detailed.maximumActivityCount == 6)
     #expect(withConversation.height - withoutConversation.height == 104)
 }
@@ -270,6 +289,29 @@ import Testing
 
 @Test func conversationCardHeightAdaptsToVisibleOutput() {
     #expect(DesktopConversationLayout.activityLineBreakMode == .byWordWrapping)
+    #expect(DesktopConversationLayout.historicalActivityLineLimit == 1)
+    #expect(DesktopConversationLayout.currentActivityLineLimit == 2)
+
+    let completedAutomation = WorkItem(
+        id: "automation:visual-review",
+        source: "自动化",
+        title: "完成任务",
+        status: .completed,
+        updatedAt: Date(),
+        phase: "全部完成",
+        phaseIndex: 3,
+        phaseCount: 3
+    )
+    #expect(DesktopConversationLayout.cardHeight(
+        item: completedAutomation,
+        lastAssistantResult: nil,
+        contentMode: .detailed
+    ) == 56)
+    #expect(DesktopConversationLayout.extraHeight(
+        item: completedAutomation,
+        lastAssistantResult: nil,
+        contentMode: .detailed
+    ) == 0)
 
     let running = WorkItem(
         id: "codex:adaptive",
@@ -281,10 +323,10 @@ import Testing
     )
     #expect(DesktopConversationLayout.cardHeight(
         item: running, lastAssistantResult: nil, contentMode: .detailed
-    ) == 112)
+    ) == 99)
     #expect(DesktopConversationLayout.extraHeight(
         item: running, lastAssistantResult: nil, contentMode: .detailed
-    ) == 50)
+    ) == 37)
 
     let withActivity = WorkItem(
         id: "codex:adaptive", source: "codex", title: "测试任务", detail: "任务",
@@ -294,10 +336,10 @@ import Testing
     )
     #expect(DesktopConversationLayout.cardHeight(
         item: withActivity, lastAssistantResult: nil, contentMode: .detailed
-    ) == 190)
+    ) == 165)
     #expect(DesktopConversationLayout.cardHeight(
         item: withActivity, lastAssistantResult: nil, contentMode: .clean
-    ) == 182)
+    ) == 165)
 
     let withWrappedActivity = WorkItem(
         id: "codex:adaptive", source: "codex", title: "测试任务", detail: "任务",
@@ -305,7 +347,7 @@ import Testing
     )
     #expect(DesktopConversationLayout.cardHeight(
         item: withWrappedActivity, lastAssistantResult: nil, contentMode: .detailed
-    ) == 152)
+    ) == 115)
 
     let waiting = WorkItem(
         id: "codex:adaptive", source: "codex", title: "测试任务", detail: "任务",
@@ -313,16 +355,187 @@ import Testing
     )
     #expect(DesktopConversationLayout.cardHeight(
         item: waiting, lastAssistantResult: "核心结论：已完成", contentMode: .detailed
-    ) == 112)
+    ) < 90)
 
     let longResult = String(repeating: "这是一段用于验证结果区域按内容增长且有上限的文字。", count: 20)
     #expect(DesktopConversationLayout.cardHeight(
         item: waiting, lastAssistantResult: longResult, contentMode: .detailed
-    ) == 252)
+    ) > 260)
+    #expect(DesktopConversationLayout.completedResultLineLimit == 0)
+    #expect(
+        DesktopConversationLayout.defaultMeasurementWidth
+            == DesktopPanelLayout.conversationContentWidth
+    )
+    #expect(DesktopConversationLayout.measuredTextHeight(for: longResult) > 160)
+    let extremelyLongResult = String(repeating: longResult, count: 20)
+    #expect(DesktopConversationLayout.cardHeight(
+        item: waiting,
+        lastAssistantResult: extremelyLongResult,
+        contentMode: .detailed
+    ) < 500)
+    #expect(DesktopConversationLayout.maximumCompletedResultHeight == 360)
+    #expect(
+        DesktopConversationLayout.measuredTextHeight(for: longResult, width: 780)
+            < DesktopConversationLayout.measuredTextHeight(for: longResult, width: 390)
+    )
+}
+
+@Test func singleLineRunningConversationUsesItsActualStackHeight() {
+    let running = WorkItem(
+        id: "codex:compact-running",
+        source: "Codex",
+        title: "盘点 AI 提效工作",
+        detail: "Documents",
+        status: .running,
+        updatedAt: Date(),
+        recentActivity: "已连接 Codex，正在等待首条进度"
+    )
+
+    #expect(DesktopConversationLayout.cardHeight(
+        item: running,
+        lastAssistantResult: nil,
+        contentMode: .clean
+    ) == 99)
+}
+
+@Test func collapsedSectionAddsOnlyItsHeaderHeight() {
+    let oneRunningSection = DesktopPanelLayout.contentSize(
+        visibleItemCount: 1,
+        sectionCount: 1,
+        conversationExtraHeightOverride: 36
+    )
+    let withCollapsedRecentSection = DesktopPanelLayout.contentSize(
+        visibleItemCount: 1,
+        sectionCount: 2,
+        conversationExtraHeightOverride: 36
+    )
+
+    #expect(withCollapsedRecentSection.height - oneRunningSection.height == 22)
+}
+
+@Test func collapsedOnlySectionsDoNotReserveTheEmptyStateHeight() {
+    let size = DesktopPanelLayout.contentSize(
+        visibleItemCount: 0,
+        sectionCount: 1,
+        showsEmptyState: false
+    )
+
+    #expect(size.height == 175)
+}
+
+@Test func expandedRecentSectionWithTwoRowsDoesNotKeepLegacyBottomWhitespace() {
+    let size = DesktopPanelLayout.contentSize(
+        visibleItemCount: 2,
+        sectionCount: 1,
+        conversationExtraHeightOverride: 0
+    )
+
+    #expect(size.height == 299)
+}
+
+@MainActor
+@Test func collapsedSectionDoesNotInsertAStretchableListSpacer() {
+    let controller = DesktopStatusPanelController()
+    controller.update(snapshot: WorkStatusSnapshot(items: [
+        WorkItem(
+            id: "codex:running",
+            source: "Codex",
+            title: "运行任务",
+            status: .running,
+            updatedAt: Date()
+        ),
+        WorkItem(
+            id: "codex:completed",
+            source: "Codex",
+            title: "完成任务",
+            status: .completed,
+            updatedAt: Date()
+        ),
+    ], automationIssues: []))
+
+    // Two section headers plus the one visible running card. The collapsed
+    // recent section must not leave a fourth, stretchable arranged subview.
+    #expect(controller.panelTaskArrangedSubviewCountForTesting == 3)
+    controller.orderWindowsOutForTesting()
+}
+
+@Test func conversationMeasurementWidthDoesNotCollapseBeforeInitialLayout() {
+    #expect(
+        DesktopConversationLayout.resolvedMeasurementWidth(
+            itemStackWidth: 0,
+            panelContentWidth: 0
+        ) == DesktopConversationLayout.defaultMeasurementWidth
+    )
+    #expect(
+        DesktopConversationLayout.resolvedMeasurementWidth(
+            itemStackWidth: 448,
+            panelContentWidth: 480
+        ) == 426
+    )
+    #expect(
+        DesktopConversationLayout.resolvedMeasurementWidth(
+            itemStackWidth: 448,
+            panelContentWidth: 1_000
+        ) == 946
+    )
+
+    let waiting = WorkItem(
+        id: "codex:initial-layout",
+        source: "codex",
+        title: "查找 Mox 关键指标趋势链接",
+        detail: "任务",
+        status: .waiting,
+        updatedAt: Date()
+    )
+    let result = "奥数中价关键指标趋势的 MOXT 链接：\n\n打开关键指标趋势图"
+    let fallbackWidth = DesktopConversationLayout.resolvedMeasurementWidth(
+        itemStackWidth: 0,
+        panelContentWidth: 0
+    )
+    #expect(
+        DesktopConversationLayout.cardHeight(
+            item: waiting,
+            lastAssistantResult: result,
+            contentMode: .clean,
+            measurementWidth: fallbackWidth
+        ) < 180
+    )
+
+    let wideResult = """
+    已修复并安装到 /Applications/AI工作岛.app。
+
+    根因是面板首帧宽度尚未生成时，文本被按 1pt 宽度测量，导致卡片偶发被错误撑高。现在会回退到正常的 426pt 内容宽度。
+
+    验证结果：
+
+    - 全量 241 项测试通过
+    - 发布候选 8 项闸门通过
+    - 签名、单实例、数据源诊断正常
+    - 安装版实际展开回读，内容已紧跟输入框
+    - 已同步更新 AI_HANDOFF.md
+    """
+    let narrowHeight = DesktopConversationLayout.cardHeight(
+        item: waiting,
+        lastAssistantResult: wideResult,
+        contentMode: .clean,
+        measurementWidth: 426
+    )
+    let wideHeight = DesktopConversationLayout.cardHeight(
+        item: waiting,
+        lastAssistantResult: wideResult,
+        contentMode: .clean,
+        measurementWidth: 946
+    )
+    #expect(wideHeight < narrowHeight)
+    let measuredWideResultHeight = DesktopConversationLayout.measuredTextHeight(
+        for: wideResult,
+        width: 946
+    )
+    #expect(wideHeight - measuredWideResultHeight == 72)
 }
 
 @Test func desktopPanelResizePolicyAllowsAUsefulWidthAndHeightRange() {
-    #expect(DesktopPanelResizePolicy.minimumFrameSize == NSSize(width: 480, height: 320))
+    #expect(DesktopPanelResizePolicy.minimumFrameSize == NSSize(width: 480, height: 175))
     #expect(DesktopPanelResizePolicy.maximumFrameSize == NSSize(width: 720, height: 820))
     #expect(
         DesktopPanelResizePolicy.clampedFrameSize(NSSize(width: 280, height: 900))
@@ -344,6 +557,24 @@ import Testing
     )
 }
 
+@MainActor
+@Test func desktopPanelRemovesUnusedHeightForEmptyAndSingleCompletedStates() {
+    let controller = DesktopStatusPanelController()
+    controller.update(snapshot: WorkStatusSnapshot(items: [], automationIssues: []))
+    #expect(controller.panelFrameSizeForTesting.height == 205)
+
+    let completed = WorkItem(
+        id: "automation:done",
+        source: "自动化",
+        title: "今日任务已完成",
+        status: .completed,
+        updatedAt: Date()
+    )
+    controller.update(snapshot: WorkStatusSnapshot(items: [completed], automationIssues: []))
+    #expect(controller.panelFrameSizeForTesting.height <= 177)
+    controller.orderWindowsOutForTesting()
+}
+
 @Test func expandedPanelIsCenteredIndependentlyOfTheCapsulePosition() {
     let visibleFrame = NSRect(x: 120, y: 80, width: 1440, height: 900)
     let compact = DesktopPanelCenterLayout.centeredFrame(
@@ -359,6 +590,23 @@ import Testing
     #expect(compact.midY == visibleFrame.midY)
     #expect(expanded.midX == visibleFrame.midX)
     #expect(expanded.midY == visibleFrame.midY)
+}
+
+@Test func expandedPanelKeepsItsTopAlignedWithTheVisibleCapsuleTop() {
+    let capsule = NSRect(x: 1_300, y: 800, width: 120, height: 50)
+    let compact = DesktopPanelCapsuleTopAlignment.alignedFrame(
+        NSRect(x: 480, y: 300, width: 480, height: 224),
+        toFloatingFrame: capsule
+    )
+    let tall = DesktopPanelCapsuleTopAlignment.alignedFrame(
+        NSRect(x: 480, y: 120, width: 480, height: 620),
+        toFloatingFrame: capsule
+    )
+    let visibleCapsuleTop = capsule.maxY - DesktopFloatingButtonLayout.animationInset
+
+    #expect(compact.maxY == visibleCapsuleTop)
+    #expect(tall.maxY == visibleCapsuleTop)
+    #expect(compact.minY > tall.minY)
 }
 
 @Test func expandedPanelRestoresTheUserMovedPosition() {
@@ -410,7 +658,59 @@ import Testing
 
     #expect(hinted.midX > target.midX)
     #expect(hinted.midY > target.midY)
-    #expect(abs(hypot(hinted.midX - target.midX, hinted.midY - target.midY) - 18) < 0.001)
+    #expect(
+        abs(
+            hypot(hinted.midX - target.midX, hinted.midY - target.midY)
+                - DesktopPanelTransitionMotion.travel
+        ) < 0.001
+    )
+}
+
+@Test func panelTransitionScalesContinuouslyTowardItsCapsuleSource() {
+    let target = NSRect(x: 480, y: 250, width: 480, height: 420)
+    let capsule = NSRect(x: 1_300, y: 800, width: 120, height: 50)
+    let expandedStart = DesktopPanelTransitionMotion.frameTowardSource(
+        targetFrame: target,
+        sourceFrame: capsule,
+        travel: DesktopPanelTransitionMotion.expandTravel,
+        scale: DesktopPanelTransitionMotion.expandSourceScale
+    )
+    let collapsedEnd = DesktopPanelTransitionMotion.frameTowardSource(
+        targetFrame: target,
+        sourceFrame: capsule,
+        travel: DesktopPanelTransitionMotion.collapseTravel,
+        scale: DesktopPanelTransitionMotion.collapseSourceScale
+    )
+
+    #expect(expandedStart.width == target.width * 0.94)
+    #expect(expandedStart.height == target.height * 0.94)
+    #expect(collapsedEnd.width == target.width * 0.965)
+    #expect(collapsedEnd.height == target.height * 0.965)
+    #expect(expandedStart.midX > target.midX)
+    #expect(expandedStart.midY > target.midY)
+    #expect(collapsedEnd.midX > target.midX)
+    #expect(collapsedEnd.midY > target.midY)
+}
+
+@Test func liquidMotionKeepsExpansionAndRetractionDeliberatelyAsymmetric() {
+    #expect(DesktopLiquidMotion.expandDuration > DesktopLiquidMotion.collapseDuration)
+    #expect(DesktopLiquidMotion.morphDuration >= DesktopLiquidMotion.collapseDuration)
+    #expect(DesktopLiquidMotion.hoverDuration < DesktopLiquidMotion.collapseDuration)
+    #expect(DesktopLiquidMotion.resizeDuration <= 0.3)
+    #expect(DesktopLiquidMotion.estimatedFrameCount(
+        duration: DesktopLiquidMotion.expandDuration,
+        refreshRate: 60
+    ) >= 16)
+    #expect(DesktopLiquidMotion.estimatedFrameCount(
+        duration: DesktopLiquidMotion.expandDuration,
+        refreshRate: 120
+    ) >= 32)
+    #expect(DesktopLiquidMotion.expandDuration < 0.30)
+    #expect(
+        DesktopLiquidMotion.contentEntranceDelay
+            + DesktopLiquidMotion.contentEntranceDuration
+            <= DesktopLiquidMotion.expandDuration
+    )
 }
 
 @Test func aStalePresentationCompletionCannotEndANewerTransition() {
@@ -420,6 +720,7 @@ import Testing
     let staleFinished = transition.finish(first)
 
     #expect(!staleFinished)
+    #expect(transition.isActive(second))
     #expect(transition.suppressesPositionSynchronization)
     let currentFinished = transition.finish(second)
     #expect(currentFinished)
@@ -445,9 +746,28 @@ import Testing
 }
 
 @MainActor
+@Test func movingExpandedPanelDoesNotMoveCollapsedCapsule() {
+    let controller = DesktopStatusPanelController()
+    let capsuleFrame = NSRect(x: 1_200, y: 700, width: 120, height: 50)
+    controller.setCollapsedFrameForTesting(capsuleFrame)
+    let originalAnchor = controller.sharedAnchorForTesting
+    let movedPanelFrame = NSRect(x: 420, y: 240, width: 480, height: 420)
+
+    controller.notifyPanelMoveForTesting(to: movedPanelFrame)
+
+    #expect(controller.floatingPanelFrameForTesting == capsuleFrame)
+    #expect(controller.sharedAnchorForTesting == originalAnchor)
+    #expect(controller.userPreferredPanelCenterForTesting == NSPoint(
+        x: movedPanelFrame.midX,
+        y: movedPanelFrame.midY
+    ))
+    controller.hide()
+}
+
+@MainActor
 @Test func edgeSnappedCapsuleReturnsToTheExactFrameAfterExpandAndCollapse() async {
     let controller = DesktopStatusPanelController()
-    let edgeFrame = NSRect(x: -6, y: 300, width: 120, height: 50)
+    let edgeFrame = NSRect(origin: NSPoint(x: -6, y: 300), size: DesktopFloatingButtonLayout.canvasSize)
     controller.setCollapsedFrameForTesting(edgeFrame)
 
     await controller.runExpandCollapseCycleForTesting()
@@ -462,7 +782,7 @@ import Testing
     controller.hide()
 }
 
-@Test func desktopPanelUsesTheSelectedSmokeGrayPalette() {
+@Test func desktopPanelUsesTheSelectedAdaptiveGlassPalette() {
     let dark = NSAppearance(named: .darkAqua)!
     var base: NSColor?
     var card: NSColor?
@@ -474,24 +794,51 @@ import Testing
     }
 
     let accuracy = 1.0e-12
-    #expect(abs((base?.redComponent ?? -1) - 48.0 / 255.0) < accuracy)
-    #expect(abs((base?.greenComponent ?? -1) - 50.0 / 255.0) < accuracy)
-    #expect(abs((base?.blueComponent ?? -1) - 55.0 / 255.0) < accuracy)
-    #expect(abs((card?.redComponent ?? -1) - 58.0 / 255.0) < accuracy)
-    #expect(abs((input?.redComponent ?? -1) - 39.0 / 255.0) < accuracy)
+    #expect(abs((base?.redComponent ?? -1) - 43.0 / 255.0) < accuracy)
+    #expect(abs((base?.greenComponent ?? -1) - 43.0 / 255.0) < accuracy)
+    #expect(abs((base?.blueComponent ?? -1) - 43.0 / 255.0) < accuracy)
+    #expect(abs((card?.redComponent ?? -1) - 60.0 / 255.0) < accuracy)
+    #expect(abs((input?.redComponent ?? -1) - 36.0 / 255.0) < accuracy)
 
     let light = NSAppearance(named: .aqua)!
     var lightBase: NSColor?
     light.performAsCurrentDrawingAppearance {
         lightBase = DesktopPanelPalette.base.usingColorSpace(.sRGB)
     }
-    #expect(abs((lightBase?.redComponent ?? -1) - 242.0 / 255.0) < accuracy)
+    #expect(abs((lightBase?.redComponent ?? -1) - 246.0 / 255.0) < accuracy)
+    #expect(abs((lightBase?.greenComponent ?? -1) - 246.0 / 255.0) < accuracy)
+    #expect(abs((lightBase?.blueComponent ?? -1) - 246.0 / 255.0) < accuracy)
+}
+
+@Test func desktopPanelNeutralSurfacesDoNotCarryAnAccentBlueTint() {
+    let appearances = [NSAppearance(named: .aqua)!, NSAppearance(named: .darkAqua)!]
+    let colors = [
+        DesktopPanelPalette.base,
+        DesktopPanelPalette.card,
+        DesktopPanelPalette.hoveredCard,
+        DesktopPanelPalette.input,
+        DesktopPanelPalette.stroke,
+    ]
+
+    for appearance in appearances {
+        appearance.performAsCurrentDrawingAppearance {
+            for color in colors {
+                let resolved = color.usingColorSpace(.sRGB)!
+                #expect(abs(resolved.redComponent - resolved.greenComponent) < 0.001)
+                #expect(abs(resolved.blueComponent - resolved.greenComponent) < 0.001)
+            }
+        }
+    }
 }
 
 @Test func appearanceModesMapToSystemLightAndDark() {
     #expect(AppAppearanceMode.system.appearance == nil)
     #expect(AppAppearanceMode.light.appearance?.name == .aqua)
     #expect(AppAppearanceMode.dark.appearance?.name == .darkAqua)
+}
+
+@Test func completedResultMarkerAlignsWithTheFirstTextLine() {
+    #expect(DesktopConversationLayout.completedResultMarkerTopInset == 0)
 }
 
 @Test func panelLayerColorsResolveAgainstTheSelectedWindowAppearance() {
@@ -619,9 +966,9 @@ import Testing
 
 @Test func floatingStatusButtonUsesACompactPillHitTarget() {
     #expect(DesktopFloatingButtonLayout.size == NSSize(width: 108, height: 38))
-    #expect(DesktopFloatingButtonLayout.canvasSize == NSSize(width: 120, height: 50))
-    #expect(DesktopFloatingButtonLayout.completionSize == NSSize(width: 320, height: 76))
-    #expect(DesktopFloatingButtonLayout.completionCanvasSize == NSSize(width: 332, height: 88))
+    #expect(DesktopFloatingButtonLayout.canvasSize == NSSize(width: 120, height: 56))
+    #expect(DesktopFloatingButtonLayout.completionSize == NSSize(width: 288, height: 64))
+    #expect(DesktopFloatingButtonLayout.completionCanvasSize == NSSize(width: 300, height: 82))
     #expect(DesktopFloatingButtonLayout.animationInset == 6)
     #expect(DesktopFloatingButtonLayout.cornerRadius == 19)
     #expect(DesktopFloatingButtonLayout.statusDotSize == 8)
@@ -639,6 +986,61 @@ import Testing
     #expect(view.layer?.masksToBounds == true)
     #expect(view.layer?.cornerRadius == DesktopFloatingButtonLayout.size.height / 2)
     controller.hide()
+}
+
+@Test func conversationCardReservesAnUncompressedTitleHeader() {
+    #expect(DesktopConversationLayout.compactHeaderHeight == 32)
+    #expect(DesktopConversationLayout.titleLineLimit == 2)
+    #expect(
+        DesktopConversationLayout.titleHorizontalCompressionResistancePriority
+            == .defaultHigh
+    )
+    #expect(DesktopConversationLayout.titleHeaderHeight(
+        for: "短标题", width: 420
+    ) == DesktopConversationLayout.compactHeaderHeight)
+    #expect(DesktopConversationLayout.titleHeaderHeight(
+        for: String(repeating: "这是需要完整显示的会话标题", count: 8),
+        width: 260
+    ) == DesktopConversationLayout.wrappedHeaderHeight)
+    let item = WorkItem(
+        id: "codex:running-title",
+        source: "Codex",
+        title: "学科业务",
+        status: .running,
+        updatedAt: Date(),
+        activities: [
+            "第一段较长的公开正文，用于占据多行空间。",
+            "第二段较长的公开正文，用于确认标题不会被向上挤压裁切。",
+            "第三段较长的公开正文，用于覆盖详细卡片的高密度场景。",
+            "第四段较长的公开正文，用于覆盖可见正文上限。",
+        ]
+    )
+    #expect(DesktopConversationLayout.cardHeight(
+        item: item,
+        lastAssistantResult: nil,
+        contentMode: .detailed
+    ) == 165)
+}
+
+@Test func expandedPanelReservesAnUncompressedMainTitleHeader() {
+    #expect(DesktopPanelHeaderLayout.minimumHeight >= 24)
+}
+
+@Test func denseRunningCardCompressesHistoryButKeepsTheCurrentUpdateReadable() {
+    let long = String(repeating: "这是一条需要多行展示的公开任务动态。", count: 8)
+    let item = WorkItem(
+        id: "codex:dense-running",
+        source: "Codex",
+        title: "学科业务",
+        status: .running,
+        updatedAt: Date(),
+        activities: [long, long, long, long]
+    )
+    #expect(DesktopConversationLayout.cardHeight(
+        item: item,
+        lastAssistantResult: nil,
+        contentMode: .detailed
+    ) == 115)
 }
 
 @MainActor
@@ -691,6 +1093,39 @@ import Testing
     controller.hide()
 }
 
+@MainActor
+@Test func collapsedWindowRepairsStaleCompletionContentConstraints() {
+    let now = Date(timeIntervalSince1970: 200)
+    let controller = DesktopStatusPanelController()
+    controller.showCollapsed()
+    controller.update(snapshot: WorkStatusSnapshot(
+        items: [WorkItem(
+            id: "codex:1", source: "Codex", title: "分析任务",
+            status: .running, updatedAt: now, phase: "读取资料"
+        )],
+        automationIssues: []
+    ))
+    controller.update(snapshot: WorkStatusSnapshot(
+        items: [WorkItem(
+            id: "codex:1", source: "Codex", title: "分析任务",
+            status: .waiting, updatedAt: now.addingTimeInterval(1)
+        )],
+        automationIssues: []
+    ))
+    #expect(controller.floatingPanelSizeForTesting == DesktopFloatingButtonLayout.completionCanvasSize)
+
+    // A racing window animation can finish at the compact outer frame while
+    // the inner completion constraints are still wide. Collapsing must repair both.
+    controller.setCollapsedFrameForTesting(NSRect(
+        origin: .zero,
+        size: DesktopFloatingButtonLayout.canvasSize
+    ))
+    controller.showCollapsed()
+
+    #expect(controller.floatingPanelSizeForTesting == DesktopFloatingButtonLayout.canvasSize)
+    controller.hide()
+}
+
 @Test func desktopWindowsSnapToEachVisibleScreenEdge() {
     let visibleFrame = NSRect(x: 0, y: 0, width: 1_440, height: 900)
     let rightTop = DesktopWindowEdgeSnap.snappedFrame(
@@ -729,6 +1164,17 @@ import Testing
 
     #expect(clamped.origin.x == 680)
     #expect(clamped.maxY - inset == screen.maxY)
+}
+
+@Test func expandedPanelShrinksWhenTheNewResolutionCannotFitItsRememberedHeight() {
+    let screen = NSRect(x: 0, y: 90, width: 1_504, height: 726)
+    let remembered = NSRect(x: 1_422, y: -65, width: 480, height: 820)
+    let clamped = DesktopWindowVisibility.clampedFrame(remembered, in: screen)
+
+    #expect(clamped.size == NSSize(width: 480, height: 726))
+    #expect(clamped.maxX == screen.maxX)
+    #expect(clamped.minY == screen.minY)
+    #expect(screen.contains(clamped))
 }
 
 @Test func expandedPanelAndCollapsedPillShareTheSameTopRightAnchor() {
@@ -834,10 +1280,11 @@ import Testing
     #expect(!DesktopFloatingButtonMotion.shouldAnimateTransition(from: idle, to: idle, reduceMotion: false))
     #expect(!DesktopFloatingButtonMotion.shouldAnimateTransition(from: idle, to: running, reduceMotion: true))
     #expect(DesktopFloatingButtonMotion.shouldAnimateTransition(from: idle, to: running, reduceMotion: false))
-    #expect(DesktopFloatingButtonMotion.entranceDuration >= 0.35)
-    #expect(DesktopFloatingButtonMotion.transitionDuration >= 0.55)
-    #expect(DesktopFloatingButtonMotion.ambientCycleDuration > DesktopFloatingButtonMotion.transitionDuration)
-    #expect(DesktopFloatingButtonMotion.borderCycleDuration > 1)
+    #expect(DesktopFloatingButtonMotion.entranceDuration >= 0.3)
+    #expect(DesktopFloatingButtonMotion.entranceDuration <= 0.4)
+    #expect(DesktopFloatingButtonMotion.transitionDuration <= 0.25)
+    #expect(DesktopFloatingButtonMotion.completionContentDelay == 0.05)
+    #expect(DesktopFloatingButtonMotion.completionContentDuration < 0.3)
     #expect(DesktopFloatingButtonMotion.carouselInterval == 4)
 }
 
@@ -981,14 +1428,30 @@ import Testing
     #expect(didRequestRestore)
 }
 
+@MainActor
+@Test func floatingStatusButtonExpandsImmediatelyBecauseDraggingHasItsOwnHandle() {
+    let view = FloatingStatusButtonView(frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.size))
+    var didRequestRestore = false
+    view.onHoverEntered = { didRequestRestore = true }
+
+    view.scheduleHoverActivationForTesting()
+
+    #expect(FloatingStatusButtonView.hoverActivationDelay == 0)
+    #expect(!view.hasPendingHoverActivationForTesting())
+    #expect(didRequestRestore)
+    #expect(DesktopFloatingButtonLayout.dragHandleSize == NSSize(width: 26, height: 6))
+    #expect(DesktopFloatingButtonLayout.canvasSize.height == 56)
+}
+
 @Test func restoredPanelCannotBeHiddenByAStaleMinimizeAnimation() {
     #expect(DesktopFloatingPanelTransition.shouldFinishMinimizing(isMinimizedToFloatingButton: true))
     #expect(!DesktopFloatingPanelTransition.shouldFinishMinimizing(isMinimizedToFloatingButton: false))
 }
 
 @Test func hoverExpandedPanelCollapsesOnlyAfterThePointerLeaves() {
-    #expect(DesktopFloatingHoverBehavior.collapseDelay == 0.5)
-    #expect(DesktopFloatingHoverBehavior.panelTravelGrace == 1.2)
+    #expect(DesktopFloatingHoverBehavior.collapseDelay == 0.25)
+    #expect(DesktopFloatingHoverBehavior.panelTravelGrace == 0.75)
+    #expect(DesktopFloatingHoverBehavior.layoutChangeGrace == 0.6)
     #expect(DesktopFloatingHoverBehavior.hoverReconciliationInterval == 0.1)
     #expect(!DesktopFloatingHoverBehavior.shouldAutoCollapse(isHoverExpanded: false, isPanelHovered: false))
     #expect(!DesktopFloatingHoverBehavior.shouldAutoCollapse(isHoverExpanded: true, isPanelHovered: true))
@@ -1007,7 +1470,15 @@ import Testing
         isHoverExpanded: true,
         isPanelHovered: false,
         hasPendingAutoCollapse: false,
-        suppressesUntilPointerReentry: true
+        suppressionExpiresAt: Date(timeIntervalSince1970: 101),
+        now: Date(timeIntervalSince1970: 100)
+    ))
+    #expect(DesktopFloatingHoverBehavior.shouldScheduleAutoCollapse(
+        isHoverExpanded: true,
+        isPanelHovered: false,
+        hasPendingAutoCollapse: false,
+        suppressionExpiresAt: Date(timeIntervalSince1970: 99),
+        now: Date(timeIntervalSince1970: 100)
     ))
     #expect(DesktopFloatingHoverBehavior.isCurrentAutoCollapseRequest(
         firedRequestID: 8,
@@ -1021,11 +1492,11 @@ import Testing
     #expect(DesktopFloatingHoverBehavior.autoCollapseDelay(
         expandedAt: now,
         now: now
-    ) == 1.2)
+    ) == 0.75)
     #expect(DesktopFloatingHoverBehavior.autoCollapseDelay(
         expandedAt: now.addingTimeInterval(-1),
         now: now
-    ) == 0.5)
+    ) == 0.25)
 }
 
 @Test func completionReminderBuildsASixSecondSummaryCapsule() {
@@ -1162,13 +1633,13 @@ import Testing
 }
 
 @MainActor
-@Test func floatingStatusButtonInstallsLayeredRunningAndTransitionAnimations() {
+@Test func floatingStatusButtonUsesRestrainedRunningAndTransitionAnimations() {
     let view = FloatingStatusButtonView(frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.size))
     view.layoutSubtreeIfNeeded()
     let runningItem = WorkItem(
         id: "running",
         source: "Codex",
-        title: "丰富动画",
+        title: "克制动画",
         status: .running,
         updatedAt: Date()
     )
@@ -1176,15 +1647,37 @@ import Testing
     view.update(snapshot: WorkStatusSnapshot(items: [runningItem], automationIssues: []))
     let motion = view.motionSnapshot()
 
-    #expect(motion.root.contains("statusBounce"))
+    #expect(!motion.root.contains("statusBounce"))
     #expect(motion.root.contains("statusBorderFlash"))
     #expect(motion.statusDot.contains("statusPulse"))
     #expect(motion.statusDot.contains("statusDotPop"))
     #expect(motion.ripple.contains("runningRipple"))
     #expect(motion.ripple.contains("statusBurst"))
-    #expect(motion.ambient.contains("ambientDrift"))
-    #expect(motion.border.contains("borderOrbit"))
-    #expect(motion.sheen.contains("statusSheen"))
+    #expect(!motion.ambient.contains("ambientDrift"))
+    #expect(!motion.border.contains("borderOrbit"))
+    #expect(!motion.sheen.contains("statusSheen"))
+}
+
+@MainActor
+@Test func completionCapsuleStagesReadableContentAfterItsShellBeginsMorphing() {
+    let view = FloatingStatusButtonView(
+        frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.completionSize)
+    )
+    view.showCompletion(
+        item: WorkItem(
+            id: "codex:completion-motion",
+            source: "Codex",
+            title: "完成更新动效",
+            status: .completed,
+            updatedAt: Date()
+        ),
+        result: "排版与动画已更新"
+    )
+
+    let motion = view.motionSnapshot()
+    #expect(motion.statusLabel.contains("completionContentReveal"))
+    #expect(motion.detailLabel.contains("completionContentReveal"))
+    #expect(!motion.root.contains("statusBounce"))
 }
 
 @Test func desktopPanelIgnoresRefreshOnlyChangesButDetectsVisibleContentChanges() {
@@ -1280,15 +1773,52 @@ import Testing
 }
 
 @Test func activeSectionIsTheDefaultCollapsibleSection() {
-    #expect(WorkSection.defaultExpandedSection(from: [.needsUser, .active, .recent]) == .active)
-    #expect(WorkSection.defaultExpandedSection(from: [.needsUser, .queued, .recent]) == .queued)
-    #expect(WorkSection.defaultExpandedSection(from: [.needsUser]) == nil)
+    #expect(WorkSection.defaultExpandedSections == [.active])
+    #expect(WorkSection.defaultExpandedSections.contains(.active))
+    #expect(!WorkSection.defaultExpandedSections.contains(.recent))
+    #expect(!WorkSection.defaultExpandedSections.contains(.queued))
 }
 
 @MainActor
 @Test func panelControlsActOnTheClickThatActivatesTheWindow() {
     #expect(FirstMouseButton().acceptsFirstMouse(for: nil))
     #expect(PastedImageTextField().acceptsFirstMouse(for: nil))
+}
+
+@MainActor
+@Test func panelBackgroundTracksEveryLiveResizeFrameWithoutDeferredGeometryAnimation() {
+    let view = PanelBackgroundView(frame: NSRect(x: 0, y: 0, width: 480, height: 320))
+    let liveResizeSizes = [
+        NSSize(width: 512, height: 366),
+        NSSize(width: 606, height: 478),
+        NSSize(width: 720, height: 640),
+    ]
+
+    for size in liveResizeSizes {
+        view.setFrameSize(size)
+        view.layoutSubtreeIfNeeded()
+        #expect(view.surfaceHighlightFrameForTesting == CGRect(origin: .zero, size: size))
+        #expect(view.surfaceHighlightAnimationKeysForTesting.isEmpty)
+    }
+}
+
+@MainActor
+@Test func liquidGlassUsesTheDesktopBehindThePanelAndPreservesReadableDepth() {
+    let view = PanelBackgroundView(frame: NSRect(x: 0, y: 0, width: 480, height: 320))
+    #expect(view.blendingMode == .behindWindow)
+
+    for isDark in [false, true] {
+        let panel = DesktopLiquidGlassTokens.panelBaseAlpha(isDark: isDark)
+        let card = DesktopLiquidGlassTokens.cardAlpha(isDark: isDark, isHovering: false)
+        let hoveredCard = DesktopLiquidGlassTokens.cardAlpha(isDark: isDark, isHovering: true)
+        let input = DesktopLiquidGlassTokens.inputAlpha(isDark: isDark)
+        let statusCapsule = DesktopLiquidGlassTokens.statusCapsuleFillAlpha(isDark: isDark)
+        #expect(panel < card)
+        #expect(card < input)
+        #expect(card < hoveredCard)
+        #expect(hoveredCard < 0.80)
+        #expect(statusCapsule == (isDark ? 0.28 : 0.24))
+    }
 }
 
 @Test func emptyWaitingCardArrowOpensTheThread() {

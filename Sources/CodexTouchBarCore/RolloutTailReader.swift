@@ -43,14 +43,14 @@ enum RolloutTailReader {
         var latestShortTermLimit: WeeklyLimitUsage?
         var latestWeeklyLimit: WeeklyLimitUsage?
         var latestAssistantResult: String?
-        var liveActivities: [String] = []
+        var commentaryActivities: [String] = []
         var latestPlanProgress: CodexLiveProgress?
         var resetsLiveProgress = false
         for line in completedData.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true) {
             let lineData = Data(line)
             let events = lineEvents(in: lineData)
             if events.task?.type == "task_started" {
-                liveActivities.removeAll(keepingCapacity: true)
+                commentaryActivities.removeAll(keepingCapacity: true)
                 latestPlanProgress = nil
                 resetsLiveProgress = true
             }
@@ -58,9 +58,10 @@ enum RolloutTailReader {
             latestShortTermLimit = events.shortTermLimit ?? latestShortTermLimit
             latestWeeklyLimit = events.weeklyLimit ?? latestWeeklyLimit
             latestAssistantResult = assistantResult(in: lineData) ?? latestAssistantResult
-            if let activity = activityMessage(in: lineData), liveActivities.last != activity {
-                liveActivities.append(activity)
-                liveActivities = Array(liveActivities.suffix(6))
+            if let commentary = commentaryMessage(in: lineData),
+               commentaryActivities.last != commentary {
+                commentaryActivities.append(commentary)
+                commentaryActivities = Array(commentaryActivities.suffix(4))
             }
             latestPlanProgress = planProgress(in: lineData) ?? latestPlanProgress
         }
@@ -70,7 +71,7 @@ enum RolloutTailReader {
             latestShortTermLimit: latestShortTermLimit,
             latestWeeklyLimit: latestWeeklyLimit,
             latestAssistantResult: latestAssistantResult,
-            liveActivities: liveActivities,
+            liveActivities: commentaryActivities,
             latestPlanProgress: latestPlanProgress,
             resetsLiveProgress: resetsLiveProgress,
             processedOffset: offset + UInt64(completedData.count),
@@ -137,6 +138,10 @@ enum RolloutTailReader {
     }
 
     static func activityMessage(in lineData: Data) -> String? {
+        commentaryMessage(in: lineData)
+    }
+
+    private static func commentaryMessage(in lineData: Data) -> String? {
         guard let object = try? JSONSerialization.jsonObject(with: lineData),
               let envelope = object as? [String: Any],
               let payload = envelope["payload"] as? [String: Any] else {
@@ -151,25 +156,37 @@ enum RolloutTailReader {
         } else if envelope["type"] as? String == "response_item",
                   payload["type"] as? String == "message",
                   payload["role"] as? String == "assistant",
-                  payload["phase"] as? String == "commentary",
+                  ((payload["phase"] as? String) == nil
+                    || payload["phase"] as? String == "commentary"),
                   let content = payload["content"] as? [[String: Any]] {
             rawText = content.compactMap { item in
                 guard item["type"] as? String == "output_text" else { return nil }
                 return item["text"] as? String
             }.joined(separator: "\n")
-        } else if envelope["type"] as? String == "response_item",
-                  payload["type"] as? String == "custom_tool_call",
-                  let name = payload["name"] as? String {
-            rawText = toolActivity(name: name, input: payload["input"] as? String)
-        } else if envelope["type"] as? String == "response_item",
-                  payload["type"] as? String == "function_call",
-                  let name = payload["name"] as? String {
-            rawText = toolActivity(name: name, input: payload["arguments"] as? String)
         } else {
             rawText = nil
         }
         guard let rawText else { return nil }
         return liveActivityDisplayText(rawText)
+    }
+
+    private static func toolActivityMessage(in lineData: Data) -> String? {
+        guard let object = try? JSONSerialization.jsonObject(with: lineData),
+              let envelope = object as? [String: Any],
+              envelope["type"] as? String == "response_item",
+              let payload = envelope["payload"] as? [String: Any],
+              let name = payload["name"] as? String else {
+            return nil
+        }
+        let rawText: String?
+        if payload["type"] as? String == "custom_tool_call" {
+            rawText = toolActivity(name: name, input: payload["input"] as? String)
+        } else if payload["type"] as? String == "function_call" {
+            rawText = toolActivity(name: name, input: payload["arguments"] as? String)
+        } else {
+            rawText = nil
+        }
+        return rawText.flatMap(liveActivityDisplayText)
     }
 
     static func planProgress(in lineData: Data) -> CodexLiveProgress? {
@@ -257,7 +274,11 @@ enum RolloutTailReader {
         guard let input, let command = commandValue(in: input) else {
             return "运行命令"
         }
-        return "运行命令：\(redactedCommand(command))"
+        let executable = command
+            .split(whereSeparator: { $0.isWhitespace })
+            .first
+            .map(String.init)
+        return executable.map { "运行命令：\($0)" } ?? "运行命令"
     }
 
     private static func commandValue(in input: String) -> String? {
@@ -316,7 +337,7 @@ enum RolloutTailReader {
     private static func resultDisplayText(
         _ rawText: String,
         preservesParagraphs: Bool = true,
-        limit: Int = 1_200
+        limit: Int? = nil
     ) -> String? {
         var displayText = rawText
         if let citationStart = displayText.range(of: "<oai-mem-citation>") {
@@ -332,9 +353,20 @@ enum RolloutTailReader {
             with: "",
             options: .regularExpression
         )
-        let lines = displayText.components(separatedBy: .newlines).map { line in
-            line.replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
+        let lines = displayText.components(separatedBy: .newlines).compactMap { line -> String? in
+            let normalizedLine = line
+                .replacingOccurrences(of: #"[ \t]+"#, with: " ", options: .regularExpression)
                 .trimmingCharacters(in: .whitespaces)
+            // Codex app directives are UI metadata for the host application,
+            // not prose. Work Island cannot render them, so never expose the
+            // raw `::name{...}` payload in a task card.
+            if normalizedLine.range(
+                of: #"^::[A-Za-z][A-Za-z0-9-]*\{.*\}$"#,
+                options: .regularExpression
+            ) != nil {
+                return nil
+            }
+            return normalizedLine
         }
         let normalized: String
         if preservesParagraphs {
@@ -346,7 +378,8 @@ enum RolloutTailReader {
             normalized = lines.filter { !$0.isEmpty }.joined(separator: " ")
         }
         guard !normalized.isEmpty else { return nil }
-        return normalized.count > limit ? String(normalized.prefix(limit - 1)) + "…" : normalized
+        guard let limit, normalized.count > limit else { return normalized }
+        return String(normalized.prefix(max(0, limit - 1))) + "…"
     }
 
     static func lineEvents(
@@ -371,6 +404,16 @@ enum RolloutTailReader {
         guard payload["type"] as? String == "token_count",
               let rateLimits = payload["rate_limits"] as? [String: Any],
               let recordedAt = timestamp else {
+            return (task, nil, nil)
+        }
+
+        // Model-specific pools (for example GPT-5.3-Codex-Spark's
+        // `codex_bengalfox`) use the same 5-hour and weekly window lengths as
+        // the account-wide Codex allowance. They must not replace the main
+        // `codex` quota merely because their event is newer. Older rollout
+        // records did not include `limit_id`, so keep accepting a missing ID.
+        if let limitID = rateLimits["limit_id"] as? String,
+           limitID != "codex" {
             return (task, nil, nil)
         }
 

@@ -21,6 +21,36 @@ enum CodexConversationRoute: Sendable {
     case new(cwd: URL)
 }
 
+enum CodexCardContinuationPolicy {
+    static func route(threadID: String, cwd: URL, isActive: Bool) -> CodexConversationRoute {
+        .desktopThread(threadID: threadID, cwd: cwd, isActive: isActive)
+    }
+}
+
+struct CodexQueueCommand: Equatable {
+    let executableURL: URL
+    let arguments: [String]
+
+    static func make(
+        executableURL: URL,
+        threadID: String,
+        prompt: CodexPrompt,
+        cwd: URL
+    ) -> CodexQueueCommand {
+        let message = CodexQueuedImageFallback.message(
+            text: prompt.text,
+            imageURLs: prompt.imageURLs
+        )
+        let arguments = [
+            "queue",
+            "--thread", threadID,
+            "--message", message,
+            "-C", cwd.path,
+        ]
+        return CodexQueueCommand(executableURL: executableURL, arguments: arguments)
+    }
+}
+
 enum CodexOwnershipReleaseResult: Equatable {
     case released
     case alreadyTransferred
@@ -251,18 +281,14 @@ enum CodexConversationBridge {
         route: CodexConversationRoute
     ) async throws -> CodexConversationResult {
         if case let .desktopThread(threadID, cwd, isActive) = route {
-            let disposition = try await CodexIPCClient().sendPrompt(
-                threadID: threadID,
-                cwd: cwd,
-                prompt: prompt.text,
-                imagePaths: prompt.imageURLs.map(\.path),
-                isActive: isActive
-            )
-            return CodexConversationResult(
-                threadID: threadID,
-                assistantText: isActive ? "指令已追加到当前任务。" : "新一轮任务已开始。",
-                steeredActiveTurn: disposition == .steeredActiveTurn
-            )
+            return try await Task.detached(priority: .userInitiated) {
+                try CodexQueueInvocation.run(
+                    threadID: threadID,
+                    prompt: prompt,
+                    cwd: cwd,
+                    isActive: isActive
+                )
+            }.value
         }
         return try await Task.detached(priority: .userInitiated) {
             try CodexAppServerInvocation.run(prompt: prompt, route: route)
@@ -290,6 +316,56 @@ enum CodexConversationBridge {
 
     static func hasInProcessOwner(threadID: String) -> Bool {
         BackgroundTurnRegistry.shared.contains(threadID: threadID)
+    }
+}
+
+private enum CodexQueueInvocation {
+    static func run(
+        threadID: String,
+        prompt: CodexPrompt,
+        cwd: URL,
+        isActive: Bool
+    ) throws -> CodexConversationResult {
+        guard let executableURL = CodexAppServerInvocation.locateCodexExecutable() else {
+            throw CodexConversationBridgeError.executableUnavailable
+        }
+        let stagedImages = try CodexQueuedImageFallback.stage(prompt.imageURLs)
+        let queuedPrompt = CodexPrompt(text: prompt.text, imageURLs: stagedImages)
+        let command = CodexQueueCommand.make(
+            executableURL: executableURL,
+            threadID: threadID,
+            prompt: queuedPrompt,
+            cwd: cwd
+        )
+        let process = Process()
+        let output = Pipe()
+        let errors = Pipe()
+        process.executableURL = command.executableURL
+        process.arguments = command.arguments
+        process.standardOutput = output
+        process.standardError = errors
+        try process.run()
+        process.waitUntilExit()
+
+        let outputText = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        let errorText = String(
+            decoding: errors.fileHandleForReading.readDataToEndOfFile(),
+            as: UTF8.self
+        )
+        guard process.terminationStatus == 0 else {
+            let detail = [errorText, outputText]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty } ?? "Codex Queue 未接受这条消息。"
+            throw CodexConversationBridgeError.requestFailed(detail)
+        }
+        return CodexConversationResult(
+            threadID: threadID,
+            assistantText: isActive ? "指令已排队，将在当前任务后继续。" : "新一轮任务已交给 Codex。",
+            steeredActiveTurn: false
+        )
     }
 }
 
@@ -619,6 +695,8 @@ private enum CodexAppServerInvocation {
         let acceptedTurnID = responseTurnIdentifier(turnResponse) ?? activeTurnID
         if case .new = route {
             retainWorkIslandThread(resolvedThreadID)
+        }
+        if case .new = route {
             BackgroundTurnRegistry.shared.register(
                 threadID: resolvedThreadID,
                 connection: connection
@@ -634,6 +712,24 @@ private enum CodexAppServerInvocation {
                 threadID: resolvedThreadID,
                 assistantText: "会话已创建，任务正在执行。",
                 steeredActiveTurn: false
+            )
+        }
+        if case .appServerThread = route {
+            BackgroundTurnRegistry.shared.register(
+                threadID: resolvedThreadID,
+                connection: connection
+            )
+            handedOffToBackground = true
+            drainAcceptedTurnInBackground(
+                threadID: resolvedThreadID,
+                turnID: acceptedTurnID,
+                connection: connection,
+                imageURLs: prompt.imageURLs
+            )
+            return CodexConversationResult(
+                threadID: resolvedThreadID,
+                assistantText: activeTurnID == nil ? "新一轮任务已开始。" : "指令已追加到当前任务。",
+                steeredActiveTurn: activeTurnID != nil
             )
         }
         let assistantText = try readUntilTurnCompletes(
@@ -704,7 +800,7 @@ private enum CodexAppServerInvocation {
         try? data.write(to: file, options: .atomic)
     }
 
-    private static func locateCodexExecutable() -> URL? {
+    fileprivate static func locateCodexExecutable() -> URL? {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let candidates = [
             URL(fileURLWithPath: "/Applications/ChatGPT.app/Contents/Resources/codex"),

@@ -64,6 +64,18 @@ import Testing
     #expect(summary.text == "运行测试")
 }
 
+@Test func runningCardExplainsConnectedStateBeforePublicProgressArrives() {
+    let summary = CodexCardStatusSummary.running(
+        phase: nil,
+        completedSteps: nil,
+        totalSteps: nil,
+        recentActivity: nil
+    )
+
+    #expect(summary.entries == ["已连接 Codex，正在等待首条进度"])
+    #expect(summary.progressText == nil)
+}
+
 @Test func waitingCodexCardStatesTheRequiredUserAction() {
     let summary = CodexCardStatusSummary.waiting(lastAssistantResult: "本地验证通过")
 
@@ -98,6 +110,20 @@ import Testing
 
     #expect(item.displayTitle == "优化桌面组件 UI")
     #expect(item.displayDetail == "正在处理 桌面组件")
+}
+
+@Test func codexCardDoesNotPresentPureEllipsisAsAConversationTitle() {
+    let item = WorkItem(
+        id: "codex:syncing",
+        source: "Codex",
+        title: "…",
+        detail: "AI工作岛",
+        status: .running,
+        updatedAt: Date()
+    )
+
+    #expect(item.displayTitle == "会话名称同步中")
+    #expect(item.displayDetail == "AI工作岛")
 }
 
 @Test func codexThreadsBecomeUnifiedWorkItems() {

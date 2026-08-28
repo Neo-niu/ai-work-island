@@ -36,7 +36,7 @@ public struct CodexCardStatusSummary: Equatable, Sendable {
             progressText = nil
         }
         return CodexCardStatusSummary(
-            entries: entries.isEmpty ? ["正在思考"] : Array(entries),
+            entries: entries.isEmpty ? ["已连接 Codex，正在等待首条进度"] : Array(entries),
             progressText: progressText
         )
     }

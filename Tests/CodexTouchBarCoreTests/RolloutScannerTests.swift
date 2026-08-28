@@ -656,6 +656,22 @@ private func rollout(
     #expect(events.weeklyLimit?.remainingPercent == 92)
 }
 
+@Test func tailReaderDoesNotTreatSparkPoolAsTheAccountWeeklyQuota() throws {
+    let spark = Data("""
+    {"timestamp":"2026-08-27T01:00:01.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex_bengalfox","limit_name":"GPT-5.3-Codex-Spark","primary":{"used_percent":0,"window_minutes":300},"secondary":{"used_percent":0,"window_minutes":10080},"plan_type":"prolite"}}}
+    """.utf8)
+    let account = Data("""
+    {"timestamp":"2026-08-27T01:00:02.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","limit_name":null,"primary":{"used_percent":45,"window_minutes":10080},"secondary":null,"plan_type":"prolite"}}}
+    """.utf8)
+
+    let sparkEvents = RolloutTailReader.lineEvents(in: spark)
+    let accountEvents = RolloutTailReader.lineEvents(in: account)
+
+    #expect(sparkEvents.shortTermLimit == nil)
+    #expect(sparkEvents.weeklyLimit == nil)
+    #expect(accountEvents.weeklyLimit?.remainingPercent == 55)
+}
+
 @Test func tailReaderExtractsOnlyTheLatestFinalAssistantResult() throws {
     let commentary = Data("""
     {"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"处理中间状态"}}
@@ -682,6 +698,27 @@ private func rollout(
     )
 }
 
+@Test func tailReaderHidesHostUIDirectivesFromFinalAnswer() {
+    let final = Data(#"""
+    {"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"已更新并回读验证：每周回顾.md。\n\n本周群聊暂未获取；历史 Todo 已归并。\n\n::inbox-item{title=\"W35 每周回顾已更新\" summary=\"六项 Todo 已归并；群聊数据暂缺\"}"}]}}
+    """#.utf8)
+
+    #expect(
+        RolloutTailReader.assistantResult(in: final)
+            == "已更新并回读验证：每周回顾.md。\n\n本周群聊暂未获取；历史 Todo 已归并。"
+    )
+}
+
+@Test func tailReaderDoesNotTruncateLongFinalAnswers() {
+    let answer = String(repeating: "完整结果段落。", count: 300)
+    let escaped = answer.replacingOccurrences(of: "\"", with: "\\\"")
+    let final = Data("""
+    {"type":"event_msg","payload":{"type":"agent_message","phase":"final_answer","message":"\(escaped)"}}
+    """.utf8)
+
+    #expect(RolloutTailReader.assistantResult(in: final) == answer)
+}
+
 @Test func tailReaderExtractsCommentaryAsLiveActivity() {
     let eventMessage = Data(#"""
     {"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":" 正在检查任务状态。\n 稍后继续。 "}}
@@ -695,7 +732,7 @@ private func rollout(
     #expect(RolloutTailReader.assistantResult(in: eventMessage) == nil)
 }
 
-@Test func tailReaderDescribesCurrentWrappedToolOperations() {
+@Test func tailReaderDoesNotMixWrappedToolOperationsIntoPublicText() {
     let wrappedCommand = Data(#"""
     {"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const r = await tools.exec_command({cmd:\"swift test\"}); text(r.output);"}}
     """#.utf8)
@@ -703,19 +740,44 @@ private func rollout(
     {"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"text(await tools.apply_patch(patch));"}}
     """#.utf8)
 
-    #expect(RolloutTailReader.activityMessage(in: wrappedCommand) == "运行命令：swift test")
-    #expect(RolloutTailReader.activityMessage(in: wrappedPatch) == "修改文件")
+    #expect(RolloutTailReader.activityMessage(in: wrappedCommand) == nil)
+    #expect(RolloutTailReader.activityMessage(in: wrappedPatch) == nil)
 }
 
-@Test func tailReaderShowsDirectCommandsAndRedactsSecrets() {
+@Test func tailReaderDoesNotShowDirectCommandsAsPublicText() {
     let direct = Data(#"""
     {"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"curl -H 'Authorization: Bearer private-token' https://example.com\"}"}}
     """#.utf8)
 
-    #expect(
-        RolloutTailReader.activityMessage(in: direct)
-            == "运行命令：curl -H 'Authorization: Bearer ••••' https://example.com"
-    )
+    #expect(RolloutTailReader.activityMessage(in: direct) == nil)
+}
+
+@Test func tailReaderKeepsPublicCommentaryAheadOfNoisyToolCalls() throws {
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: url) }
+    try #"""
+    {"type":"event_msg","payload":{"type":"task_started"}}
+    {"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"我先读取任务最近进展，再从断点继续。"}}
+    {"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const r = await tools.exec_command({cmd:\"sed -n '1,200p' AI_HANDOFF.md\"}); text(r.output);"}}
+    {"type":"response_item","payload":{"type":"custom_tool_call","name":"exec","input":"const r = await tools.exec_command({cmd:\"swift test --disable-sandbox\"}); text(r.output);"}}
+    {"type":"event_msg","payload":{"type":"agent_message","phase":"commentary","message":"断点已定位，现在核对代码和运行数据。"}}
+
+    """#.write(to: url, atomically: true, encoding: .utf8)
+
+    let update = try RolloutTailReader.readChanges(at: url, from: 0)
+    #expect(update.liveActivities == [
+        "我先读取任务最近进展，再从断点继续。",
+        "断点已定位，现在核对代码和运行数据。",
+    ])
+}
+
+@Test func tailReaderReadsCurrentCodexPublicMessageWithoutPhase() {
+    let line = Data(#"""
+    {"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"六份补拉已启动，首份查询已提交。\n\n首份因 Spark 环节点故障，正在重试。"}]}}
+    """#.utf8)
+
+    #expect(RolloutTailReader.activityMessage(in: line) ==
+        "六份补拉已启动，首份查询已提交。\n\n首份因 Spark 环节点故障，正在重试。")
 }
 
 @Test func tailReaderUsesExplicitPlanForRealStepProgress() {

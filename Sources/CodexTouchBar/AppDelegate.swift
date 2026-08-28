@@ -370,8 +370,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appearanceItem.submenu = appearanceMenu
         menu.addItem(appearanceItem)
 
-        let contentModeItem = NSMenuItem(title: "任务信息密度", action: nil, keyEquivalent: "")
-        let contentModeMenu = NSMenu(title: "任务信息密度")
+        let contentModeItem = NSMenuItem(title: "任务进度显示", action: nil, keyEquivalent: "")
+        let contentModeMenu = NSMenu(title: "任务进度显示")
         let cleanContentModeMenuItem = NSMenuItem(
             title: DesktopContentMode.clean.title,
             action: #selector(selectCleanContentMode),
@@ -400,7 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(openStatusDirectoryItem)
 
         let startVoiceMemoItem = NSMenuItem(
-            title: "开始语音备忘录（全局 ⌥⌘R）",
+            title: "开始语音备忘录（全局 Caps Lock + R）",
             action: #selector(performRecordingHotKeyActionFromMenu),
             keyEquivalent: "r"
         )
@@ -592,6 +592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             codexWeeklyLimit: weeklyLimit,
             companyQuota: companyQuota
         ))
+        updateRefreshSchedule()
         processPendingRestartRecoveryTransfer(in: rawGroups)
         updateStatusText()
     }
@@ -637,7 +638,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             isDashboardVisible: shouldRefresh,
             hasActiveWork: latestHasActiveWork
         )
-        guard scheduledRefreshInterval != interval else { return }
+        guard RefreshPolicy.shouldReplaceTimer(
+            scheduledInterval: scheduledRefreshInterval,
+            desiredInterval: interval,
+            timerIsValid: refreshTimer?.isValid == true
+        ) else { return }
         refreshTimer?.invalidate()
         refreshTimer = nil
         scheduledRefreshInterval = interval
@@ -1087,13 +1092,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             defer { Self.removeTemporaryImages(prompt.imageURLs) }
             do {
-                let result = try await CodexConversationBridge.send(
-                    prompt: prompt,
-                    route: .desktopThread(
-                        threadID: thread.id,
-                        cwd: thread.cwd,
-                        isActive: thread.isActive
-                    )
+                let result = try await sendCodexCardPrompt(
+                    prompt,
+                    to: thread
                 )
                 desktopPanelController.updateCodexCardStatus(
                     itemID: itemID,
@@ -1109,6 +1110,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             cardConversationsInFlight.remove(itemID)
         }
+    }
+
+    private func sendCodexCardPrompt(
+        _ prompt: CodexPrompt,
+        to thread: ActiveThread
+    ) async throws -> CodexConversationResult {
+        let route = CodexCardContinuationPolicy.route(
+            threadID: thread.id,
+            cwd: thread.cwd,
+            isActive: thread.isActive
+        )
+        return try await CodexConversationBridge.send(prompt: prompt, route: route)
     }
 
     private static func removeTemporaryImages(_ urls: [URL]) {
@@ -1155,8 +1168,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateRecordingHotKeyMenuItem(isRecording: Bool) {
         recordingHotKeyMenuItem?.title = isRecording
-            ? "停止录音并保留（全局 ⌥⌘R）"
-            : "开始语音备忘录（全局 ⌥⌘R）"
+            ? "停止录音并保留（全局 Caps Lock + R）"
+            : "开始语音备忘录（全局 Caps Lock + R）"
     }
 
     private func finishVoiceMemoRecording() {
@@ -1260,6 +1273,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func refreshTimerFired() {
         requestRefresh()
+        // Keep quota refresh tied to the app's proven-active polling loop as
+        // well as its dedicated timer. CompanyQuotaScanner enforces the
+        // five-minute network interval, so this is cheap between due scans
+        // and recovers if AppKit coalesces or drops the long-running timer.
+        requestCompanyQuotaRefresh()
     }
 
     @objc private func companyQuotaTimerFired() {

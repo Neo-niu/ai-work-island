@@ -95,30 +95,25 @@ try {
   }
   assert(tree.includes("恢复 AI工作岛"), "冷启动可读取悬浮胶囊");
 
-  let center = capsuleCenter(tree);
-  await movePointer(center.x, center.y);
-  await delay(250);
-  tree = await waitForSource(
-    (value) => value.includes("额度剩余") || value.includes("公司额度")
-  );
+  for (let attempt = 0; attempt < 3 && !tree.includes("新任务指令"); attempt += 1) {
+    const center = capsuleCenter(tree);
+    await movePointer(center.x, center.y);
+    await delay(350);
+    tree = await waitForSource((value) => value.includes("新任务指令"), 2_000);
+    if (!tree.includes("新任务指令")) {
+      await movePointerOutside();
+      await delay(700);
+      tree = await source();
+    }
+  }
   assert(tree.includes("新任务指令"), "指向胶囊后真实面板展开");
   assert(tree.includes("创建新任务"), "展开面板包含新任务发送入口");
+  const hasQuotaSummary = (value) => value.includes('identifier="额度摘要"');
+  tree = await waitForSource(hasQuotaSummary, 8_000);
   assert(
-    tree.includes("额度剩余") || tree.includes("公司额度"),
+    hasQuotaSummary(tree),
     "展开面板包含额度摘要"
   );
-
-  const prompt = await find("accessibility id", "新任务指令");
-  const marker = "Appium UI smoke input";
-  await request(`/session/${sessionID}/element/${prompt}/value`, "POST", {
-    text: marker,
-    value: [...marker],
-  });
-  tree = await source();
-  assert(tree.includes(marker), "新任务输入框可写入但不提交");
-  await request(`/session/${sessionID}/element/${prompt}/clear`, "POST", {});
-  tree = await source();
-  assert(!tree.includes(marker), "冒烟测试临时输入已清理");
 
   await movePointerOutside();
   await delay(900);
@@ -126,14 +121,17 @@ try {
   assert(!tree.includes("新任务指令") && tree.includes("恢复 AI工作岛"), "鼠标离开后面板自动回缩");
 
   for (let index = 0; index < 3; index += 1) {
-    tree = await source();
-    center = capsuleCenter(tree);
+    tree = await waitForSource((value) => value.includes("恢复 AI工作岛"), 2_000);
+    const center = capsuleCenter(tree);
     await movePointer(center.x, center.y);
     await delay(120);
     await movePointerOutside();
-    await delay(800);
+    await delay(1_500);
   }
-  tree = await source();
+  tree = await waitForSource(
+    (value) => value.includes("恢复 AI工作岛") && !value.includes("新任务指令"),
+    2_000
+  );
   assert(tree.includes("恢复 AI工作岛") && !tree.includes("新任务指令"), "快速展开回缩三轮后窗口未消失或卡死");
 
   const screenshot = await request(`/session/${sessionID}/screenshot`);

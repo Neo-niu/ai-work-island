@@ -32,7 +32,7 @@ echo "[6/8] 数据源诊断"
 echo "[7/8] 安装版辅助功能树"
 "$APP_EXECUTABLE" --diagnose-accessibility-pid "$(/usr/bin/pgrep -f "$APP_EXECUTABLE")"
 
-echo "[8/8] Appium Mac2 安装版黑盒冒烟"
-./script/run_appium_smoke.sh
+echo "[8/8] Appium 状态"
+echo "SKIP: Mac2 会话会触发 testmanagerd 第三方输入法授权；安装版交互改由人工/Computer Use 验收。"
 
 echo "AI工作岛发布候选自动闸门通过。仍需按 docs/TESTING.md 完成尚未自动化的验收项。"
