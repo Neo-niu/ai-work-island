@@ -287,7 +287,8 @@ enum DesktopLiquidMotion {
     static let collapseDuration: TimeInterval = 0.22
     static let contentEntranceDelay: TimeInterval = 0.05
     static let contentEntranceDuration: TimeInterval = 0.16
-    static let morphDuration: TimeInterval = 0.46
+    static let morphDuration: TimeInterval = 0.72
+    static let completionMorphCollapseDuration: TimeInterval = 0.32
     static let hoverDuration: TimeInterval = 0.14
     static let resizeDuration: TimeInterval = 0.30
 
@@ -312,6 +313,10 @@ enum DesktopLiquidMotion {
 
     static func resizeTiming() -> CAMediaTimingFunction {
         CAMediaTimingFunction(controlPoints: 0.77, 0, 0.175, 1)
+    }
+
+    static func completionMorphTiming() -> CAMediaTimingFunction {
+        CAMediaTimingFunction(name: .easeInEaseOut)
     }
 
     static var reducesMotion: Bool {
@@ -698,7 +703,7 @@ enum DesktopFloatingButtonLayout {
     static let canvasSize = canvasSize(for: size)
     static let completionCanvasSize = canvasSize(for: completionSize)
     static let cornerRadius: CGFloat = size.height / 2
-    static let completionCornerRadius: CGFloat = 22
+    static let completionCornerRadius: CGFloat = 26
     static let statusDotSize: CGFloat = 8
 }
 
@@ -860,8 +865,9 @@ struct DesktopFloatingButtonPresentation: Equatable {
 enum DesktopFloatingButtonMotion {
     static let entranceDuration: TimeInterval = 0.34
     static let transitionDuration: TimeInterval = 0.24
-    static let completionContentDelay: TimeInterval = 0.05
-    static let completionContentDuration: TimeInterval = 0.28
+    static let completionContentDelay: TimeInterval = 0.70
+    static let completionContentDuration: TimeInterval = 0.24
+    static let completionContentStagger: TimeInterval = 0.04
     static let carouselInterval: TimeInterval = 4
 
     static func shouldAnimateTransition(
@@ -966,8 +972,25 @@ enum DesktopCompletionReminderBehavior {
     }
 }
 
+enum DesktopCompletionUIReviewMode: Equatable {
+    case disabled
+    case looping
+    case held
+
+    init(arguments: [String]) {
+        if arguments.contains("--ui-review-completion-hold") {
+            self = .held
+        } else if arguments.contains("--ui-review-completion") {
+            self = .looping
+        } else {
+            self = .disabled
+        }
+    }
+}
+
 struct DesktopFloatingButtonMotionSnapshot: Equatable {
     let root: Set<String>
+    let shellMask: Set<String>
     let statusDot: Set<String>
     let statusLabel: Set<String>
     let detailLabel: Set<String>
@@ -1122,6 +1145,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     private var autoCollapseSuppressionExpiresAt: Date?
     private var hoverExpandedAt: Date?
     private var pendingCompletionCollapse: DispatchWorkItem?
+    private var completionUIReviewTimer: Timer?
+    private var completionUIReviewMode: DesktopCompletionUIReviewMode = .disabled
     private var codexResults: [String: String] = [:]
     private var codexRows: [String: WorkItemRowView] = [:]
     private var displayMode: DesktopPanelMode = .background
@@ -1275,6 +1300,53 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         floatingPanel.orderOut(nil)
     }
 
+    func startCompletionUIReview(_ mode: DesktopCompletionUIReviewMode) {
+        completionUIReviewTimer?.invalidate()
+        completionUIReviewTimer = nil
+        completionUIReviewMode = mode
+        guard mode != .disabled else { return }
+
+        showCollapsed()
+        presentCompletionUIReview(holdsPresentation: mode == .held)
+        guard mode == .looping else { return }
+
+        let timer = Timer(timeInterval: 8, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.presentCompletionUIReview(holdsPresentation: false)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        completionUIReviewTimer = timer
+    }
+
+    private func presentCompletionUIReview(holdsPresentation: Bool) {
+        pendingCompletionCollapse?.cancel()
+        pendingCompletionCollapse = nil
+        floatingButtonView.clearCompletion()
+        floatingButtonView.showCompletion(
+            item: WorkItem(
+                id: "codex:completion-ui-review",
+                source: "Codex",
+                title: "工作岛状态动画",
+                status: .completed,
+                updatedAt: Date()
+            ),
+            result: "任务扩充状态已完成"
+        )
+        setFloatingContentSize(DesktopFloatingButtonLayout.completionSize, animated: true)
+        floatingPanel.orderFrontRegardless()
+
+        guard !holdsPresentation else { return }
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.restoreCompactFloatingButton()
+        }
+        pendingCompletionCollapse = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + DesktopCompletionReminderBehavior.revealDuration,
+            execute: workItem
+        )
+    }
+
     @objc private func screenParametersDidChange(_ notification: Notification) {
         recoverAfterScreenConfigurationChange()
     }
@@ -1327,7 +1399,16 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         return !codexRows.isEmpty
             && codexRows.values.allSatisfy(\.activityRowsFillLeadingEdgeForTesting)
     }
+    var conversationRowsStayInsideCardForTesting: Bool {
+        panel.contentView?.layoutSubtreeIfNeeded()
+        return !codexRows.isEmpty
+            && codexRows.values.allSatisfy(\.contentStaysInsideCardForTesting)
+    }
     var floatingPanelFrameForTesting: NSRect { floatingPanel.frame }
+    var floatingButtonMotionForTesting: DesktopFloatingButtonMotionSnapshot {
+        floatingButtonView.motionSnapshot()
+    }
+    var completionCollapseIsScheduledForTesting: Bool { pendingCompletionCollapse != nil }
     var floatingPanelHasWindowShadowForTesting: Bool { floatingPanel.hasShadow }
     var sharedAnchorForTesting: NSPoint? { sharedTopRightAnchor }
     var userPreferredPanelCenterForTesting: NSPoint? { userPreferredPanelCenter }
@@ -1338,8 +1419,16 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         didPositionFloatingPanel = true
     }
 
+    func setCodexResultForTesting(_ result: String, itemID: String) {
+        codexResults[itemID] = result
+    }
+
     func beginPresentationTransitionForTesting() -> UInt {
         windowPresentationTransition.begin()
+    }
+
+    func activateFloatingButtonForTesting() {
+        activateFloatingButton(hoverExpanded: true)
     }
 
     func finishPresentationTransitionForTesting(_ generation: UInt) {
@@ -2070,6 +2159,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     }
 
     private func activateFloatingButton(hoverExpanded: Bool) {
+        guard completionUIReviewMode == .disabled else { return }
         guard DesktopFloatingPanelTransition.shouldActivate(
             isMinimizedToFloatingButton: isMinimizedToFloatingButton,
             isFloatingPanelVisible: floatingPanel.isVisible
@@ -2146,7 +2236,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         previousSnapshot: WorkStatusSnapshot?,
         currentSnapshot: WorkStatusSnapshot
     ) {
-        guard isMinimizedToFloatingButton,
+        guard completionUIReviewMode == .disabled,
+              isMinimizedToFloatingButton,
               let completedItem = DesktopCompletionReminderBehavior.completedItem(
                 from: currentSnapshot,
                 matching: itemIDs
@@ -2200,11 +2291,22 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         if frameAlreadyMatches {
             floatingPanel.contentView?.layoutSubtreeIfNeeded()
         } else if animated, !DesktopLiquidMotion.reducesMotion {
+            let isExpanding = canvasSize.width > floatingPanel.frame.width
+            if isExpanding {
+                setFrame(targetFrame, for: floatingPanel)
+                floatingPanel.contentView?.layoutSubtreeIfNeeded()
+                floatingButtonView.playCompletionShellExpansion(
+                    from: NSSize(
+                        width: DesktopFloatingButtonLayout.size.width,
+                        height: DesktopFloatingButtonLayout.size.height
+                    )
+                )
+                return
+            }
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = DesktopLiquidMotion.morphDuration
-                context.timingFunction = DesktopLiquidMotion.expandTiming()
+                context.duration = DesktopLiquidMotion.completionMorphCollapseDuration
+                context.timingFunction = DesktopLiquidMotion.resizeTiming()
                 floatingPanel.animator().setFrame(targetFrame, display: true)
-                floatingPanel.contentView?.animator().layoutSubtreeIfNeeded()
             }
         } else {
             setFrame(targetFrame, for: floatingPanel)
@@ -2567,6 +2669,7 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     private let rippleLayer = CAShapeLayer()
     private let sheenLayer = CAGradientLayer()
     private let glassHighlightLayer = CAGradientLayer()
+    private let completionShellMaskLayer = CAShapeLayer()
     private var trackingAreaReference: NSTrackingArea?
     private var currentTintColor = NSColor.controlAccentColor
     private var currentPresentation: DesktopFloatingButtonPresentation?
@@ -2579,6 +2682,7 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     private var isHovering = false
     private var suppressesHoverActivationUntilExit = false
     private var pendingHoverActivation: DispatchWorkItem?
+    private var completionShellAnimationGeneration: UInt = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -2777,6 +2881,7 @@ final class FloatingStatusButtonView: NSVisualEffectView {
             ? bounds.height / 2
             : DesktopFloatingButtonLayout.completionCornerRadius
         layer?.cornerRadius = cornerRadius
+        completionShellMaskLayer.frame = bounds
         glassHighlightLayer.frame = bounds
         ambientLayer.frame = CGRect(x: -bounds.width, y: 0, width: bounds.width * 2, height: bounds.height)
         borderContainerLayer.frame = bounds
@@ -2837,6 +2942,9 @@ final class FloatingStatusButtonView: NSVisualEffectView {
 
     func clearCompletion() {
         guard completionPresentation != nil else { return }
+        completionShellAnimationGeneration &+= 1
+        completionShellMaskLayer.removeAllAnimations()
+        layer?.mask = nil
         completionPresentation = nil
         statusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         detailLabel.font = .systemFont(ofSize: 11, weight: .regular)
@@ -3097,11 +3205,56 @@ final class FloatingStatusButtonView: NSVisualEffectView {
 
             let reveal = CAAnimationGroup()
             reveal.animations = [opacity, rise]
-            reveal.beginTime = beginTime + Double(index) * 0.018
+            reveal.beginTime = beginTime
+                + Double(index) * DesktopFloatingButtonMotion.completionContentStagger
             reveal.duration = DesktopFloatingButtonMotion.completionContentDuration
             reveal.fillMode = .backwards
             reveal.timingFunction = CAMediaTimingFunction(controlPoints: 0.23, 1, 0.32, 1)
             contentLayer.add(reveal, forKey: "completionContentReveal")
+        }
+    }
+
+    func playCompletionShellExpansion(from compactSize: NSSize) {
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        completionShellAnimationGeneration &+= 1
+        let generation = completionShellAnimationGeneration
+        layoutSubtreeIfNeeded()
+        let finalRect = bounds
+        let compactRect = NSRect(
+            x: finalRect.maxX - compactSize.width,
+            y: finalRect.midY - compactSize.height / 2,
+            width: compactSize.width,
+            height: compactSize.height
+        )
+        let startPath = CGPath(
+            roundedRect: compactRect,
+            cornerWidth: compactSize.height / 2,
+            cornerHeight: compactSize.height / 2,
+            transform: nil
+        )
+        let finalPath = CGPath(
+            roundedRect: finalRect,
+            cornerWidth: DesktopFloatingButtonLayout.completionCornerRadius,
+            cornerHeight: DesktopFloatingButtonLayout.completionCornerRadius,
+            transform: nil
+        )
+        completionShellMaskLayer.frame = bounds
+        completionShellMaskLayer.fillColor = NSColor.white.cgColor
+        completionShellMaskLayer.path = finalPath
+        layer?.mask = completionShellMaskLayer
+
+        let morph = CABasicAnimation(keyPath: "path")
+        morph.fromValue = startPath
+        morph.toValue = finalPath
+        morph.duration = DesktopLiquidMotion.morphDuration
+        morph.timingFunction = DesktopLiquidMotion.completionMorphTiming()
+        completionShellMaskLayer.add(morph, forKey: "completionShellMorph")
+        DispatchQueue.main.asyncAfter(deadline: .now() + DesktopLiquidMotion.morphDuration) { [weak self] in
+            guard let self,
+                  completionShellAnimationGeneration == generation,
+                  completionPresentation != nil else { return }
+            completionShellMaskLayer.removeAllAnimations()
+            layer?.mask = nil
         }
     }
 
@@ -3138,6 +3291,7 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     func motionSnapshot() -> DesktopFloatingButtonMotionSnapshot {
         DesktopFloatingButtonMotionSnapshot(
             root: Set(layer?.animationKeys() ?? []),
+            shellMask: Set(completionShellMaskLayer.animationKeys() ?? []),
             statusDot: Set(statusDot.layer?.animationKeys() ?? []),
             statusLabel: Set(statusLabel.layer?.animationKeys() ?? []),
             detailLabel: Set(detailLabel.layer?.animationKeys() ?? []),
@@ -3569,14 +3723,22 @@ private final class CodexActivityRowView: NSView {
             textView.isSelectable = true
             textView.textContainerInset = .zero
             textView.textContainer?.lineFragmentPadding = 0
+            textView.minSize = .zero
+            textView.maxSize = NSSize(
+                width: CGFloat.greatestFiniteMagnitude,
+                height: CGFloat.greatestFiniteMagnitude
+            )
             textView.isHorizontallyResizable = false
             textView.isVerticallyResizable = true
+            textView.autoresizingMask = [.width]
             textView.textContainer?.widthTracksTextView = true
 
             let scrollView = NSScrollView()
             scrollView.drawsBackground = false
             scrollView.borderType = .noBorder
             scrollView.hasVerticalScroller = true
+            scrollView.hasHorizontalScroller = false
+            scrollView.horizontalScrollElasticity = .none
             scrollView.autohidesScrollers = true
             scrollView.documentView = textView
             scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -3639,6 +3801,8 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
     private let imageCountLabel = NSTextField(labelWithString: "")
     private let sendButton = FirstMouseButton()
     private let activityTimeline = NSStackView()
+    private weak var titleForTesting: NSTextField?
+    private weak var resultScrollViewForTesting: NSScrollView?
     private let glassHighlightLayer = CAGradientLayer()
     private var tracking: NSTrackingArea?
     private var isHovering = false
@@ -3691,12 +3855,16 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
         ])
 
         let title = NSTextField(labelWithString: item.displayTitle)
+        titleForTesting = title
         title.font = .systemFont(ofSize: 13.5, weight: .regular)
         title.alignment = DesktopPanelTypography.metadataAlignment
-        title.lineBreakMode = .byWordWrapping
+        // URLs and identifiers often contain no whitespace. Word wrapping leaves
+        // those titles with a very large intrinsic width, which can push the card
+        // past the panel's right edge and make the whole column look clipped.
+        title.lineBreakMode = .byCharWrapping
         title.maximumNumberOfLines = DesktopConversationLayout.titleLineLimit
         title.setContentCompressionResistancePriority(
-            DesktopConversationLayout.titleHorizontalCompressionResistancePriority,
+            .defaultLow,
             for: .horizontal
         )
 
@@ -3714,7 +3882,7 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
         textStack.spacing = 0
         textStack.setHuggingPriority(.defaultLow, for: .horizontal)
         textStack.setContentCompressionResistancePriority(
-            DesktopConversationLayout.titleHorizontalCompressionResistancePriority,
+            .defaultLow,
             for: .horizontal
         )
         title.widthAnchor.constraint(equalTo: textStack.widthAnchor).isActive = true
@@ -3829,6 +3997,9 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
                         : DesktopConversationLayout.completedResultLineLimit
                 )
                 activityTimeline.addArrangedSubview(row)
+                if item.status != .running {
+                    resultScrollViewForTesting = row.subviews.compactMap { $0 as? NSScrollView }.first
+                }
                 row.widthAnchor.constraint(equalTo: activityTimeline.widthAnchor).isActive = true
                 row.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(selectRow)))
             }
@@ -3986,6 +4157,24 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
             abs(row.frame.minX) < 0.5
                 && abs(row.frame.width - activityTimeline.bounds.width) < 0.5
         }
+    }
+
+
+    var contentStaysInsideCardForTesting: Bool {
+        layoutSubtreeIfNeeded()
+        activityTimeline.layoutSubtreeIfNeeded()
+        // NSTextField's cell draws up to 2pt beyond its alignment rect.
+        let tolerance: CGFloat = 2.1
+        guard let titleForTesting,
+              titleForTesting.frame.minX >= -tolerance,
+              titleForTesting.frame.maxX <= titleForTesting.superview!.bounds.maxX + tolerance
+        else { return false }
+        guard let resultScrollViewForTesting else { return true }
+        resultScrollViewForTesting.layoutSubtreeIfNeeded()
+        guard !resultScrollViewForTesting.hasHorizontalScroller,
+              let textView = resultScrollViewForTesting.documentView as? NSTextView
+        else { return false }
+        return textView.frame.width <= resultScrollViewForTesting.contentSize.width + tolerance
     }
 
     override func updateTrackingAreas() {

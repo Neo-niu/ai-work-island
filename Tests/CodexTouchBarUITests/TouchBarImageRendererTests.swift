@@ -3,6 +3,42 @@ import AppKit
 import CodexTouchBarCore
 import Testing
 
+@Test func completionUIReviewModeRequiresAnExplicitLaunchArgument() {
+    #expect(DesktopCompletionUIReviewMode(arguments: ["AI工作岛"]) == .disabled)
+    #expect(DesktopCompletionUIReviewMode(
+        arguments: ["AI工作岛", "--ui-review-completion"]
+    ) == .looping)
+    #expect(DesktopCompletionUIReviewMode(
+        arguments: ["AI工作岛", "--ui-review-completion-hold"]
+    ) == .held)
+    #expect(DesktopCompletionUIReviewMode(
+        arguments: ["AI工作岛", "--ui-review-completion", "--ui-review-completion-hold"]
+    ) == .held)
+}
+
+@MainActor
+@Test func heldCompletionUIReviewUsesTheExpandedCapsuleWithoutARealTask() {
+    let controller = DesktopStatusPanelController()
+
+    controller.startCompletionUIReview(.held)
+
+    let now = Date()
+    controller.update(snapshot: WorkStatusSnapshot(items: [
+        WorkItem(id: "codex:real", source: "Codex", title: "真实任务", status: .running, updatedAt: now)
+    ], automationIssues: [], refreshedAt: now))
+    controller.update(snapshot: WorkStatusSnapshot(items: [
+        WorkItem(id: "codex:real", source: "Codex", title: "真实任务", status: .completed, updatedAt: now)
+    ], automationIssues: [], refreshedAt: now))
+    controller.activateFloatingButtonForTesting()
+
+    #expect(controller.floatingPanelIsVisibleForTesting)
+    #expect(!controller.panelIsVisibleForTesting)
+    #expect(controller.floatingPanelSizeForTesting == DesktopFloatingButtonLayout.completionCanvasSize)
+    #expect(controller.floatingButtonMotionForTesting.shellMask.contains("completionShellMorph"))
+    #expect(!controller.completionCollapseIsScheduledForTesting)
+    controller.orderWindowsOutForTesting()
+}
+
 @MainActor
 @Test func imageRendererCombinesAnIconAndTitleIntoOneDrawableImage() {
     let image = TouchBarImageRenderer.image(
@@ -175,6 +211,31 @@ import Testing
     ))
 
     #expect(controller.activityRowsFillLeadingEdgeForTesting)
+    controller.hide()
+}
+
+@MainActor
+@Test func longURLsAndCompletedTextStayInsideTheConversationCard() {
+    let controller = DesktopStatusPanelController()
+    let itemID = "codex:right-edge"
+    controller.setCodexResultForTesting(
+        "需要注意：仅从当前看板 SQL 可以确认目标来自 Barley 维表；"
+            + String(repeating: "https://barley.rush.zhenguanyu.com/dashboard", count: 5),
+        itemID: itemID
+    )
+    controller.update(snapshot: WorkStatusSnapshot(
+        items: [WorkItem(
+            id: itemID,
+            source: "Codex",
+            title: "帮我看下这个barley看板的数据源，目标来自哪，实际课次来自哪 "
+                + String(repeating: "https://barley.rush.zhenguanyu.com/dashboard", count: 3),
+            status: .waiting,
+            updatedAt: Date()
+        )],
+        automationIssues: []
+    ))
+
+    #expect(controller.conversationRowsStayInsideCardForTesting)
     controller.hide()
 }
 
@@ -695,6 +756,13 @@ import Testing
 @Test func liquidMotionKeepsExpansionAndRetractionDeliberatelyAsymmetric() {
     #expect(DesktopLiquidMotion.expandDuration > DesktopLiquidMotion.collapseDuration)
     #expect(DesktopLiquidMotion.morphDuration >= DesktopLiquidMotion.collapseDuration)
+    #expect(DesktopLiquidMotion.morphDuration == 0.72)
+    #expect(DesktopLiquidMotion.completionMorphCollapseDuration == 0.32)
+    #expect(DesktopLiquidMotion.morphDuration > DesktopLiquidMotion.completionMorphCollapseDuration)
+    #expect(DesktopLiquidMotion.estimatedFrameCount(
+        duration: DesktopLiquidMotion.morphDuration,
+        refreshRate: 60
+    ) >= 44)
     #expect(DesktopLiquidMotion.hoverDuration < DesktopLiquidMotion.collapseDuration)
     #expect(DesktopLiquidMotion.resizeDuration <= 0.3)
     #expect(DesktopLiquidMotion.estimatedFrameCount(
@@ -971,6 +1039,7 @@ import Testing
     #expect(DesktopFloatingButtonLayout.completionCanvasSize == NSSize(width: 300, height: 82))
     #expect(DesktopFloatingButtonLayout.animationInset == 6)
     #expect(DesktopFloatingButtonLayout.cornerRadius == 19)
+    #expect(DesktopFloatingButtonLayout.completionCornerRadius == 26)
     #expect(DesktopFloatingButtonLayout.statusDotSize == 8)
 }
 
@@ -1283,8 +1352,13 @@ import Testing
     #expect(DesktopFloatingButtonMotion.entranceDuration >= 0.3)
     #expect(DesktopFloatingButtonMotion.entranceDuration <= 0.4)
     #expect(DesktopFloatingButtonMotion.transitionDuration <= 0.25)
-    #expect(DesktopFloatingButtonMotion.completionContentDelay == 0.05)
-    #expect(DesktopFloatingButtonMotion.completionContentDuration < 0.3)
+    #expect(DesktopFloatingButtonMotion.completionContentDelay == 0.70)
+    #expect(DesktopFloatingButtonMotion.completionContentDuration == 0.24)
+    #expect(
+        DesktopFloatingButtonMotion.completionContentDelay
+            >= DesktopLiquidMotion.morphDuration - 0.02
+    )
+    #expect(DesktopFloatingButtonMotion.completionContentStagger == 0.04)
     #expect(DesktopFloatingButtonMotion.carouselInterval == 4)
 }
 

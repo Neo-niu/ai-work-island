@@ -263,7 +263,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startCompanyQuotaRefreshSchedule()
         requestCompanyQuotaRefresh()
         updatePresentation()
-        if ProcessInfo.processInfo.arguments.contains("--ui-review-panel") {
+        let completionUIReviewMode = DesktopCompletionUIReviewMode(
+            arguments: ProcessInfo.processInfo.arguments
+        )
+        if completionUIReviewMode != .disabled {
+            desktopPanelController.startCompletionUIReview(completionUIReviewMode)
+        } else if ProcessInfo.processInfo.arguments.contains("--ui-review-panel") {
             desktopPanelController.show()
         } else if isDesktopPanelVisible {
             desktopPanelController.showCollapsed()
