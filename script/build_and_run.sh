@@ -92,6 +92,8 @@ cat >"$INFO_PLIST" <<PLIST
   <true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>仅分析实时音量以提醒长时间静音，不保存或上传音频。</string>
+  <key>NSRemindersFullAccessUsageDescription</key>
+  <string>将你确认的会议待办保存到提醒事项。</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
 </dict>

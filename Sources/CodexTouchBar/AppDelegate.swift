@@ -46,9 +46,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let recordingReminderCategory = "voice-memo-silence-reminder"
     private static let finishRecordingAction = "finish-and-keep-voice-memo"
     private static let continueRecordingAction = "continue-voice-memo"
+    private static let meetingTodoCategory = "meeting-todo-confirmation"
+    private static let keepMeetingTodoAction = "keep-meeting-todo"
+    private static let deleteMeetingTodoAction = "delete-meeting-todo"
 
     private let scanner = RolloutScanner()
     private let automationStatusScanner = AutomationStatusScanner()
+    private let meetingTodoQueue = MeetingTodoConfirmationQueue()
+    private let meetingReminderWriter = MeetingReminderWriter()
     private let companyQuotaScanner = CompanyQuotaScanner()
     private let grouper = ProjectGrouper()
     private let touchBarController = TouchBarController()
@@ -95,6 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var voiceMemoGuardianState: VoiceMemoGuardianState?
     private var didRequestRecordingNotificationAuthorization = false
     private var recordingNotificationsAuthorized = false
+    private var notifiedMeetingTodoIDs: Set<String> = []
+    private var meetingTodoAlertVisible = false
     private var voiceMemoRenameInFlight = false
     private var lastVoiceMemoRenameAttempt = Date.distantPast
 
@@ -268,6 +275,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         updateRefreshSchedule()
         requestRefresh()
+        requestRecordingNotificationAuthorizationIfNeeded()
+        processMeetingTodoConfirmations()
         startCompanyQuotaRefreshSchedule()
         requestCompanyQuotaRefresh()
         updatePresentation()
@@ -1260,12 +1269,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             title: "继续录音",
             options: []
         )
-        center.setNotificationCategories([UNNotificationCategory(
+        let recordingCategory = UNNotificationCategory(
             identifier: Self.recordingReminderCategory,
             actions: [finish, keepGoing],
             intentIdentifiers: [],
             options: []
-        )])
+        )
+        let keepTodo = UNNotificationAction(
+            identifier: Self.keepMeetingTodoAction,
+            title: "保留到提醒事项",
+            options: [.foreground]
+        )
+        let deleteTodo = UNNotificationAction(
+            identifier: Self.deleteMeetingTodoAction,
+            title: "删除",
+            options: [.destructive]
+        )
+        let todoCategory = UNNotificationCategory(
+            identifier: Self.meetingTodoCategory,
+            actions: [keepTodo, deleteTodo],
+            intentIdentifiers: [],
+            options: []
+        )
+        center.setNotificationCategories([recordingCategory, todoCategory])
     }
 
     private func requestRecordingNotificationAuthorizationIfNeeded() {
@@ -1273,8 +1299,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         didRequestRecordingNotificationAuthorization = true
         RecordingNotificationAuthorization.request { [weak self] granted in
             Task { @MainActor in
-                self?.recordingNotificationsAuthorized = granted
+                guard let self else { return }
+                self.recordingNotificationsAuthorized = granted
+                self.processMeetingTodoConfirmations()
             }
+        }
+    }
+
+    private func processMeetingTodoConfirmations() {
+        guard !isSilentMode else { return }
+        let candidates = meetingTodoQueue.pendingCandidates()
+        for candidate in candidates where !notifiedMeetingTodoIDs.contains(candidate.id) {
+            notifiedMeetingTodoIDs.insert(candidate.id)
+            if recordingNotificationsAuthorized {
+                showMeetingTodoNotification(candidate)
+            } else if !meetingTodoAlertVisible {
+                showMeetingTodoAlert(candidate)
+                break
+            }
+        }
+    }
+
+    private func showMeetingTodoNotification(_ candidate: MeetingTodoCandidate) {
+        let content = UNMutableNotificationContent()
+        content.title = "会议待办确认"
+        let metadata = [candidate.owner, candidate.dueDate]
+            .filter { !$0.isEmpty && $0 != "待确认" }
+            .joined(separator: " · ")
+        content.body = metadata.isEmpty ? candidate.title : "\(candidate.title)\n\(metadata)"
+        content.sound = .default
+        content.categoryIdentifier = Self.meetingTodoCategory
+        content.userInfo = ["meetingTodoID": candidate.id]
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "meeting-todo-\(candidate.id)",
+            content: content,
+            trigger: nil
+        ))
+    }
+
+    private func showMeetingTodoAlert(_ candidate: MeetingTodoCandidate) {
+        meetingTodoAlertVisible = true
+        let alert = NSAlert()
+        alert.messageText = "这是你要保留的待办吗？"
+        alert.informativeText = "\(candidate.title)\n\n来源：\(candidate.meetingTitle)"
+        alert.addButton(withTitle: "保留到提醒事项")
+        alert.addButton(withTitle: "删除")
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        let keep = alert.runModal() == .alertFirstButtonReturn
+        meetingTodoAlertVisible = false
+        resolveMeetingTodo(candidate, keep: keep)
+    }
+
+    private func resolveMeetingTodo(_ candidate: MeetingTodoCandidate, keep: Bool) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                if keep {
+                    try await meetingReminderWriter.save(candidate)
+                }
+                try meetingTodoQueue.discard(candidate)
+                showTransientStatus(keep ? "已保留到提醒事项" : "已删除会议待办")
+            } catch {
+                notifiedMeetingTodoIDs.remove(candidate.id)
+                showTransientStatus("处理会议待办失败：\(error.localizedDescription)", duration: 15)
+            }
+            processMeetingTodoConfirmations()
         }
     }
 
@@ -1321,6 +1410,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func refreshTimerFired() {
         requestRefresh()
+        processMeetingTodoConfirmations()
         // Keep quota refresh tied to the app's proven-active polling loop as
         // well as its dedicated timer. CompanyQuotaScanner enforces the
         // five-minute network interval, so this is cheap between due scans
@@ -1459,6 +1549,7 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let action = response.actionIdentifier
+        let meetingTodoID = response.notification.request.content.userInfo["meetingTodoID"] as? String
         completionHandler()
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1468,6 +1559,15 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
             case Self.continueRecordingAction:
                 voiceMemoGuardian.continueRecording()
                 showTransientStatus("继续录音；15 分钟内不重复提醒")
+            case Self.keepMeetingTodoAction, Self.deleteMeetingTodoAction,
+                 UNNotificationDefaultActionIdentifier:
+                guard let id = meetingTodoID,
+                      let candidate = meetingTodoQueue.candidate(id: id) else { break }
+                if action == UNNotificationDefaultActionIdentifier {
+                    showMeetingTodoAlert(candidate)
+                } else {
+                    resolveMeetingTodo(candidate, keep: action == Self.keepMeetingTodoAction)
+                }
             default:
                 break
             }
