@@ -180,6 +180,105 @@ enum DesktopConversationLayout {
     }
 }
 
+@MainActor
+enum DesktopResultTextRenderer {
+    private static let bodyFont = NSFont.systemFont(ofSize: 12.5, weight: .regular)
+    private static let headerFont = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
+
+    static func attributedString(for source: String) -> NSAttributedString {
+        let output = NSMutableAttributedString()
+        let lines = source.components(separatedBy: .newlines)
+        var index = 0
+
+        while index < lines.count {
+            if index + 1 < lines.count,
+               let headers = tableCells(in: lines[index]),
+               isSeparatorRow(lines[index + 1], columnCount: headers.count) {
+                var rows = [headers]
+                index += 2
+                while index < lines.count,
+                      let cells = tableCells(in: lines[index]),
+                      cells.count == headers.count {
+                    rows.append(cells)
+                    index += 1
+                }
+                appendTable(rows, to: output)
+                continue
+            }
+
+            output.append(NSAttributedString(
+                string: lines[index],
+                attributes: [.font: bodyFont, .foregroundColor: NSColor.labelColor]
+            ))
+            if index < lines.count - 1 { output.append(NSAttributedString(string: "\n")) }
+            index += 1
+        }
+        return output
+    }
+
+    static func containsTable(in source: String) -> Bool {
+        let lines = source.components(separatedBy: .newlines)
+        return lines.indices.dropLast().contains { index in
+            guard let headers = tableCells(in: lines[index]) else { return false }
+            return isSeparatorRow(lines[index + 1], columnCount: headers.count)
+        }
+    }
+
+    private static func tableCells(in line: String) -> [String]? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.contains("|") else { return nil }
+        let content = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "|"))
+        let cells = content.split(separator: "|", omittingEmptySubsequences: false).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        return cells.count >= 2 ? cells : nil
+    }
+
+    private static func isSeparatorRow(_ line: String, columnCount: Int) -> Bool {
+        guard let cells = tableCells(in: line), cells.count == columnCount else { return false }
+        return cells.allSatisfy { cell in
+            let rule = cell.trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+            return rule.count >= 3 && rule.allSatisfy { $0 == "-" }
+        }
+    }
+
+    private static func appendTable(_ rows: [[String]], to output: NSMutableAttributedString) {
+        let table = NSTextTable()
+        table.numberOfColumns = rows[0].count
+        table.collapsesBorders = true
+        table.hidesEmptyCells = false
+
+        for (rowIndex, row) in rows.enumerated() {
+            for (columnIndex, text) in row.enumerated() {
+                let block = NSTextTableBlock(
+                    table: table,
+                    startingRow: rowIndex,
+                    rowSpan: 1,
+                    startingColumn: columnIndex,
+                    columnSpan: 1
+                )
+                block.setWidth(0.5, type: .absoluteValueType, for: .border)
+                block.setBorderColor(.separatorColor)
+                block.setWidth(5, type: .absoluteValueType, for: .padding)
+                if rowIndex == 0 {
+                    block.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08)
+                }
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.textBlocks = [block]
+                paragraph.lineBreakMode = .byWordWrapping
+                output.append(NSAttributedString(
+                    string: text + "\n",
+                    attributes: [
+                        .font: rowIndex == 0 ? headerFont : bodyFont,
+                        .foregroundColor: NSColor.labelColor,
+                        .paragraphStyle: paragraph,
+                    ]
+                ))
+            }
+        }
+    }
+}
+
 enum DesktopPanelHeaderLayout {
     static let minimumHeight: CGFloat = 24
 }
@@ -4178,9 +4277,9 @@ private final class CodexActivityRowView: NSView {
 
         if isResult {
             let textView = NSTextView(frame: .zero)
-            textView.string = text
-            textView.font = .systemFont(ofSize: 12.5, weight: .regular)
-            textView.textColor = .labelColor
+            textView.textStorage?.setAttributedString(
+                DesktopResultTextRenderer.attributedString(for: text)
+            )
             textView.drawsBackground = false
             textView.isEditable = false
             textView.isSelectable = true

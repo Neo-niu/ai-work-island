@@ -947,6 +947,34 @@ import Testing
     #expect(DesktopConversationLayout.completedResultMarkerTopInset == 0)
 }
 
+@MainActor
+@Test func completedResultRendersMarkdownTablesWithoutSyntaxRows() {
+    let markdown = """
+    结论：
+
+    | 推荐度 | 项目 | 状态 |
+    |---|---|---|
+    | 1 | btt-window-manager-preset | 2026 年仍维护 |
+    | 2 | btt-config | 2026 年更新 |
+    """
+
+    let rendered = DesktopResultTextRenderer.attributedString(for: markdown)
+    #expect(DesktopResultTextRenderer.containsTable(in: markdown))
+    #expect(!rendered.string.contains("|---|"))
+    #expect(!rendered.string.contains("| 推荐度 |"))
+    #expect(rendered.string.contains("btt-window-manager-preset"))
+    var hasTableBlock = false
+    rendered.enumerateAttribute(
+        .paragraphStyle,
+        in: NSRange(location: 0, length: rendered.length)
+    ) { value, _, stop in
+        guard let style = value as? NSParagraphStyle, !style.textBlocks.isEmpty else { return }
+        hasTableBlock = true
+        stop.pointee = true
+    }
+    #expect(hasTableBlock)
+}
+
 @Test func panelLayerColorsResolveAgainstTheSelectedWindowAppearance() {
     let dark = NSAppearance(named: .darkAqua)!
     let light = NSAppearance(named: .aqua)!

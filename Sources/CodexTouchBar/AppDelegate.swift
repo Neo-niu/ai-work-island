@@ -219,27 +219,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         desktopPanelController.onItemAcknowledged = { [weak self] item in
             guard let self,
                   item.id.hasPrefix("codex:") else { return }
-            Task { @MainActor [weak self] in
-                await self?.acknowledgeCodexThreads([
-                    (
-                        id: String(item.id.dropFirst("codex:".count)),
-                        title: item.displayTitle
-                    ),
-                ])
-            }
+            self.acknowledgeCodexThreads([
+                String(item.id.dropFirst("codex:".count)),
+            ])
         }
         desktopPanelController.onAllWaitingAcknowledged = { [weak self] in
             guard let self else { return }
-            let threads = (self.latestGroups ?? []).flatMap(\.threads)
+            let threadIDs = (self.latestGroups ?? []).flatMap(\.threads)
                 .filter(\.isUnread)
-                .map { (id: $0.id, title: $0.title ?? "") }
-            guard !threads.isEmpty else {
+                .map(\.id)
+            guard !threadIDs.isEmpty else {
                 self.showTransientStatus("当前没有待读会话")
                 return
             }
-            Task { @MainActor [weak self] in
-                await self?.acknowledgeCodexThreads(threads)
-            }
+            self.acknowledgeCodexThreads(threadIDs)
         }
         desktopPanelController.onCodexTransferSelected = { [weak self] item in
             self?.transferWorkItemToCodex(item)
@@ -766,47 +759,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = markThreadsViewed([threadID])
     }
 
-    private func acknowledgeCodexThreads(_ threads: [(id: String, title: String)]) async {
-        guard !threads.isEmpty else { return }
-        let selectedTitle = CodexAccessibilityController().selectedSidebarThreadTitle()
-        let selectedThread = selectedTitle.flatMap { title in
-            latestGroups?.flatMap(\.threads).first { thread in
-                !threads.contains(where: { $0.id == thread.id }) && thread.title == title
-            }
+    private func acknowledgeCodexThreads(_ threadIDs: [String]) {
+        guard !threadIDs.isEmpty else { return }
+        guard markThreadsViewed(threadIDs) else {
+            showTransientStatus("工作岛未能保存已读状态，请重试")
+            return
         }
-        var acknowledgedIDs: [String] = []
-        for thread in threads {
-            do {
-                try await CodexAccessibilityController().openThread(
-                    threadID: thread.id,
-                    title: thread.title
-                )
-                acknowledgedIDs.append(thread.id)
-            } catch {
-                break
-            }
-        }
-        if let selectedThread {
-            try? await CodexAccessibilityController().openThread(
-                threadID: selectedThread.id,
-                title: selectedThread.title ?? ""
-            )
-        }
-        if !acknowledgedIDs.isEmpty {
-            guard markThreadsViewed(acknowledgedIDs) else {
-                showTransientStatus("Codex 已取消未读，工作岛本地回读失败")
-                return
-            }
-        }
-        if acknowledgedIDs.count == threads.count {
-            showTransientStatus(
-                threads.count == 1 ? "已阅状态已同步到 Codex" : "已清空待读会话，并同步到 Codex"
-            )
-        } else if acknowledgedIDs.isEmpty {
-            showTransientStatus("Codex 未读状态未取消，请重试")
-        } else {
-            showTransientStatus("部分任务已同步，其余任务请重试")
-        }
+        showTransientStatus(threadIDs.count == 1 ? "已在工作岛完成并设为已读" : "已全部完成并设为已读")
     }
 
     private func beginOptimisticThreadView(_ threadID: String) {
