@@ -210,6 +210,12 @@ import Testing
         threadID: "019ffb2e-bb82-7d51-a642-fc031f582e78",
         retainedWorkIslandThreadIDs: retained
     ))
+    #expect(!CodexThreadOpeningPolicy.shouldHideOptimistically(
+        isOwnershipTransfer: true
+    ))
+    #expect(CodexThreadOpeningPolicy.shouldHideOptimistically(
+        isOwnershipTransfer: false
+    ))
 }
 
 @Test func waitingCodexCardOpensItsThreadBeforeShowingGenericIssueDetails() {

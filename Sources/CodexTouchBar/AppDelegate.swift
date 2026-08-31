@@ -9,6 +9,10 @@ enum CodexThreadOpeningPolicy {
     ) -> Bool {
         retainedWorkIslandThreadIDs.contains(threadID)
     }
+
+    static func shouldHideOptimistically(isOwnershipTransfer: Bool) -> Bool {
+        !isOwnershipTransfer
+    }
 }
 
 enum WorkItemPrimaryAction: Equatable {
@@ -215,16 +219,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         desktopPanelController.onItemAcknowledged = { [weak self] item in
             guard let self,
                   item.id.hasPrefix("codex:") else { return }
-            self.markThreadsViewed([String(item.id.dropFirst("codex:".count))])
-            self.showTransientStatus("已标记为已阅")
+            Task { @MainActor [weak self] in
+                await self?.acknowledgeCodexThreads([
+                    (
+                        id: String(item.id.dropFirst("codex:".count)),
+                        title: item.displayTitle
+                    ),
+                ])
+            }
         }
         desktopPanelController.onAllWaitingAcknowledged = { [weak self] in
             guard let self else { return }
-            let threadIDs = (self.latestGroups ?? []).flatMap(\.threads)
+            let threads = (self.latestGroups ?? []).flatMap(\.threads)
                 .filter(\.isUnread)
-                .map(\.id)
-            self.markThreadsViewed(threadIDs)
-            self.showTransientStatus(threadIDs.isEmpty ? "当前没有待读会话" : "已清空待读会话")
+                .map { (id: $0.id, title: $0.title ?? "") }
+            guard !threads.isEmpty else {
+                self.showTransientStatus("当前没有待读会话")
+                return
+            }
+            Task { @MainActor [weak self] in
+                await self?.acknowledgeCodexThreads(threads)
+            }
         }
         desktopPanelController.onCodexTransferSelected = { [weak self] item in
             self?.transferWorkItemToCodex(item)
@@ -690,14 +705,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openThread(
         _ thread: ActiveThread,
-        successMessage: String
+        successMessage: String,
+        isOwnershipTransfer: Bool = false
     ) {
         if let title = thread.title,
            !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let codex = NSRunningApplication.runningApplications(
             withBundleIdentifier: Self.codexBundleIdentifier
            ).first {
-            beginOptimisticThreadView(thread.id)
+            if CodexThreadOpeningPolicy.shouldHideOptimistically(
+                isOwnershipTransfer: isOwnershipTransfer
+            ) {
+                beginOptimisticThreadView(thread.id)
+            }
             codex.activate(options: [.activateIgnoringOtherApps])
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -710,7 +730,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     self.finishOpeningThread(thread.id, successMessage: successMessage)
                 } catch {
-                    self.cancelOptimisticThreadView(thread.id)
+                    if CodexThreadOpeningPolicy.shouldHideOptimistically(
+                        isOwnershipTransfer: isOwnershipTransfer
+                    ) {
+                        self.cancelOptimisticThreadView(thread.id)
+                    }
+                    self.desktopPanelController.updateCodexCardStatus(
+                        itemID: "codex:\(thread.id)",
+                        text: "Codex 尚未接管该任务，请稍后重试"
+                    )
                     self.showTransientStatus(
                         "会话已保留，Codex 仍在同步；请稍后从工作岛重试",
                         duration: 8
@@ -718,6 +746,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             return
+        }
+        if isOwnershipTransfer {
+            desktopPanelController.updateCodexCardStatus(
+                itemID: "codex:\(thread.id)",
+                text: "Codex 未打开，任务仍保留在工作岛"
+            )
         }
         showTransientStatus("请先打开 Codex，再从工作岛进入该会话", duration: 8)
     }
@@ -729,14 +763,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func markThreadViewed(_ threadID: String) {
-        let file = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Application Support/Codex Hermes Touch Bar/viewed-thread-ids.json"
+        _ = markThreadsViewed([threadID])
+    }
+
+    private func acknowledgeCodexThreads(_ threads: [(id: String, title: String)]) async {
+        guard !threads.isEmpty else { return }
+        let selectedTitle = CodexAccessibilityController().selectedSidebarThreadTitle()
+        let selectedThread = selectedTitle.flatMap { title in
+            latestGroups?.flatMap(\.threads).first { thread in
+                !threads.contains(where: { $0.id == thread.id }) && thread.title == title
+            }
+        }
+        var acknowledgedIDs: [String] = []
+        for thread in threads {
+            do {
+                try await CodexAccessibilityController().openThread(
+                    threadID: thread.id,
+                    title: thread.title
+                )
+                acknowledgedIDs.append(thread.id)
+            } catch {
+                break
+            }
+        }
+        if let selectedThread {
+            try? await CodexAccessibilityController().openThread(
+                threadID: selectedThread.id,
+                title: selectedThread.title ?? ""
             )
-        let viewedAt = Date()
-        guard (try? ViewedThreadStore.markViewed(threadID: threadID, at: viewedAt, file: file)) != nil else { return }
-        optimisticallyViewedAtByThreadID[threadID] = viewedAt
-        applyOptimisticallyViewedThreads()
+        }
+        if !acknowledgedIDs.isEmpty {
+            guard markThreadsViewed(acknowledgedIDs) else {
+                showTransientStatus("Codex 已取消未读，工作岛本地回读失败")
+                return
+            }
+        }
+        if acknowledgedIDs.count == threads.count {
+            showTransientStatus(
+                threads.count == 1 ? "已阅状态已同步到 Codex" : "已清空待读会话，并同步到 Codex"
+            )
+        } else if acknowledgedIDs.isEmpty {
+            showTransientStatus("Codex 未读状态未取消，请重试")
+        } else {
+            showTransientStatus("部分任务已同步，其余任务请重试")
+        }
     }
 
     private func beginOptimisticThreadView(_ threadID: String) {
@@ -749,16 +819,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestRefresh()
     }
 
-    private func markThreadsViewed(_ threadIDs: [String]) {
+    @discardableResult
+    private func markThreadsViewed(_ threadIDs: [String]) -> Bool {
+        guard !threadIDs.isEmpty else { return true }
         let file = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(
                 "Library/Application Support/Codex Hermes Touch Bar/viewed-thread-ids.json"
             )
         let viewedAt = Date()
-        guard (try? ViewedThreadStore.markViewed(threadIDs: threadIDs, at: viewedAt, file: file)) != nil else { return }
+        guard (try? ViewedThreadStore.markViewed(threadIDs: threadIDs, at: viewedAt, file: file)) != nil else {
+            return false
+        }
         for threadID in threadIDs { optimisticallyViewedAtByThreadID[threadID] = viewedAt }
         applyOptimisticallyViewedThreads()
         requestRefresh()
+        return true
     }
 
     private func applyOptimisticallyViewedThreads() {
@@ -875,7 +950,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ) {
                     DurableCodexAppServer.stop()
                 }
-                openThread(thread, successMessage: "已转到 Codex")
+                desktopPanelController.updateCodexCardStatus(
+                    itemID: "codex:\(thread.id)",
+                    text: "工作岛已释放，正在转到 Codex…",
+                    isBusy: true
+                )
+                openThread(
+                    thread,
+                    successMessage: "已转到 Codex",
+                    isOwnershipTransfer: true
+                )
             case let .failed(message):
                 desktopPanelController.updateCodexCardStatus(
                     itemID: "codex:\(thread.id)",

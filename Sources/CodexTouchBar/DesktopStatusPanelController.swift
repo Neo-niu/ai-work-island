@@ -631,6 +631,15 @@ enum DesktopLiquidGlassTokens {
     }
     static func inputAlpha(isDark: Bool) -> CGFloat { isDark ? 0.84 : 0.68 }
     static func statusCapsuleFillAlpha(isDark: Bool) -> CGFloat { isDark ? 0.28 : 0.24 }
+    static func dragHandleAlpha(
+        isDark: Bool,
+        isHovering: Bool,
+        isPressed: Bool
+    ) -> CGFloat {
+        if isPressed { return isDark ? 0.62 : 0.68 }
+        if isHovering { return isDark ? 0.50 : 0.58 }
+        return isDark ? 0.32 : 0.46
+    }
     static func capsuleAlpha(isDark: Bool, showsCompletion: Bool) -> CGFloat {
         if isDark { return showsCompletion ? 0.54 : 0.46 }
         return showsCompletion ? 0.76 : 0.68
@@ -717,12 +726,14 @@ struct DesktopFloatingButtonPresentation: Equatable {
     let detailText: String?
     let tintColor: NSColor
     let pulses: Bool
+    let isRunning: Bool
     let accessibilityLabel: String
 
     static func make(items: [WorkItem], latestCompleted: WorkItem?) -> Self {
         let waitingCount = items.filter { $0.status == .waiting }.count
         let issueCount = items.filter { $0.status == .failed || $0.status == .stale }.count
-        let activeCount = items.filter { $0.status.isActiveWork }.count
+        let runningCount = items.filter { $0.status == .running }.count
+        let queuedCount = items.filter { $0.status == .queued }.count
 
         let displayText: String
         let tintColor: NSColor
@@ -735,10 +746,14 @@ struct DesktopFloatingButtonPresentation: Equatable {
             displayText = "\(waitingCount) 等待你"
             tintColor = .systemOrange
             pulses = false
-        } else if activeCount > 0 {
-            displayText = "\(activeCount) 运行"
+        } else if runningCount > 0 {
+            displayText = "\(runningCount) 运行"
             tintColor = .systemBlue
             pulses = true
+        } else if queuedCount > 0 {
+            displayText = "\(queuedCount) 排队"
+            tintColor = .systemBlue
+            pulses = false
         } else if latestCompleted != nil {
             displayText = "已完成"
             tintColor = .systemGreen
@@ -755,6 +770,7 @@ struct DesktopFloatingButtonPresentation: Equatable {
             detailText: nil,
             tintColor: tintColor,
             pulses: pulses,
+            isRunning: runningCount > 0,
             accessibilityLabel: accessibilityLabel
         )
     }
@@ -775,7 +791,8 @@ struct DesktopFloatingButtonPresentation: Equatable {
                 displayText: "公司 \(quota.remainingPercent)%",
                 remainingPercent: quota.remainingPercent,
                 normalTint: .systemPurple,
-                accessibilityText: "公司额度剩余\(quota.remainingPercent)%"
+                accessibilityText: "公司额度剩余\(quota.remainingPercent)%",
+                isRunning: work.isRunning
             ))
         } else {
             pages.append(Self(
@@ -783,6 +800,7 @@ struct DesktopFloatingButtonPresentation: Equatable {
                 detailText: nil,
                 tintColor: .systemPurple,
                 pulses: false,
+                isRunning: work.isRunning,
                 accessibilityLabel: "恢复 AI工作岛；公司额度待配置，请在 Edge 登录公司模型平台"
             ))
         }
@@ -791,7 +809,8 @@ struct DesktopFloatingButtonPresentation: Equatable {
                 displayText: "5时 \(limit.remainingPercent)%",
                 remainingPercent: limit.remainingPercent,
                 normalTint: .systemTeal,
-                accessibilityText: "5小时额度剩余\(limit.remainingPercent)%"
+                accessibilityText: "5小时额度剩余\(limit.remainingPercent)%",
+                isRunning: work.isRunning
             ))
         }
         if let limit = snapshot.codexWeeklyLimit {
@@ -799,7 +818,8 @@ struct DesktopFloatingButtonPresentation: Equatable {
                 displayText: "周 \(limit.remainingPercent)%",
                 remainingPercent: limit.remainingPercent,
                 normalTint: .systemIndigo,
-                accessibilityText: "周额度剩余\(limit.remainingPercent)%"
+                accessibilityText: "周额度剩余\(limit.remainingPercent)%",
+                isRunning: work.isRunning
             ))
         }
         return pages
@@ -812,6 +832,7 @@ struct DesktopFloatingButtonPresentation: Equatable {
             detailText: nil,
             tintColor: isSilent ? .systemOrange : .systemRed,
             pulses: !isSilent,
+            isRunning: false,
             accessibilityLabel: isSilent
                 ? "语音备忘录可能已结束；\(state.displayText(at: now))"
                 : "语音备忘录正在录音；\(state.displayText(at: now))"
@@ -822,7 +843,8 @@ struct DesktopFloatingButtonPresentation: Equatable {
         displayText: String,
         remainingPercent: Int,
         normalTint: NSColor,
-        accessibilityText: String
+        accessibilityText: String,
+        isRunning: Bool
     ) -> Self {
         let tintColor: NSColor
         if remainingPercent <= 20 {
@@ -837,6 +859,7 @@ struct DesktopFloatingButtonPresentation: Equatable {
             detailText: nil,
             tintColor: tintColor,
             pulses: false,
+            isRunning: isRunning,
             accessibilityLabel: "恢复 AI工作岛；\(accessibilityText)"
         )
     }
@@ -862,6 +885,7 @@ struct DesktopFloatingButtonPresentation: Equatable {
             detailText: detail,
             tintColor: .systemGreen,
             pulses: false,
+            isRunning: false,
             accessibilityLabel: "AI工作岛任务已完成；\(item.displayTitle)；\(detail)"
         )
     }
@@ -960,20 +984,32 @@ enum DesktopCompletionReminderBehavior {
     ) -> Set<String> {
         guard let previous else { return [] }
         let previousStatuses = Dictionary(uniqueKeysWithValues: previous.items.map { ($0.id, $0.status) })
-        return Set(current.items.compactMap { item in
+        let transitionedItemIDs: Set<String> = Set(current.items.compactMap { item -> String? in
             guard previousStatuses[item.id]?.isActiveWork == true,
                   item.status == .waiting || item.status == .completed else { return nil }
             return item.id
         })
+        let currentItemIDs = Set(current.items.map(\.id))
+        let disappearedCodexItemIDs: Set<String> = Set(previous.items.compactMap { item -> String? in
+            guard item.id.hasPrefix("codex:"),
+                  item.status.isActiveWork,
+                  !currentItemIDs.contains(item.id) else { return nil }
+            return item.id
+        })
+        return transitionedItemIDs.union(disappearedCodexItemIDs)
     }
 
-
     static func completedItem(
-        from snapshot: WorkStatusSnapshot,
+        previous: WorkStatusSnapshot?,
+        current: WorkStatusSnapshot,
         matching itemIDs: Set<String>
     ) -> WorkItem? {
-        snapshot.items
+        let currentMatches = current.items
             .filter { itemIDs.contains($0.id) }
+        let currentMatch = currentMatches.max { $0.updatedAt < $1.updatedAt }
+        guard currentMatch == nil else { return currentMatch }
+        return previous?.items
+            .filter { itemIDs.contains($0.id) && $0.status.isActiveWork }
             .max { $0.updatedAt < $1.updatedAt }
     }
 }
@@ -1428,7 +1464,16 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         floatingButtonView.motionSnapshot()
     }
     var completionCollapseIsScheduledForTesting: Bool { pendingCompletionCollapse != nil }
+    var floatingButtonIsShowingCompletionForTesting: Bool {
+        floatingButtonView.isCompletionVisibleForTesting()
+    }
+    var floatingButtonCompactVisualIsRestoredForTesting: Bool {
+        floatingButtonView.compactVisualIsRestoredForTesting()
+    }
     func startCompletionCollapseForTesting() { restoreCompactFloatingButton() }
+    func interruptCompletionCollapseForTesting() {
+        floatingButtonView.interruptCompletionShellCollapseForTesting()
+    }
     var floatingPanelHasWindowShadowForTesting: Bool { floatingPanel.hasShadow }
     var sharedAnchorForTesting: NSPoint? { sharedTopRightAnchor }
     var userPreferredPanelCenterForTesting: NSPoint? { userPreferredPanelCenter }
@@ -2259,7 +2304,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
         guard completionUIReviewMode == .disabled,
               isMinimizedToFloatingButton,
               let completedItem = DesktopCompletionReminderBehavior.completedItem(
-                from: currentSnapshot,
+                previous: previousSnapshot,
+                current: currentSnapshot,
                 matching: itemIDs
               ) else { return }
         let priorItem = previousSnapshot?.items.first { $0.id == completedItem.id }
@@ -2349,23 +2395,47 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
             floatingButtonView.playCompletionShellCollapse(
                 to: contentSize
             ) { [weak self] in
-                guard let self else { return }
-                applyFloatingContentSizeConstraints(contentSize)
-                setFrame(targetFrame, for: floatingPanel)
-                floatingPanel.contentView?.layoutSubtreeIfNeeded()
-                floatingDragHandleView.finishCompletionTransition()
-                completion?()
+                self?.finishFloatingContentCollapse(
+                    contentSize: contentSize,
+                    targetFrame: targetFrame,
+                    completion: completion
+                )
             }
             floatingDragHandleView.playCompletionCollapse(
                 horizontalTravel: horizontalTravel,
                 duration: DesktopLiquidMotion.completionMorphCollapseDuration
             )
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + DesktopLiquidMotion.completionMorphCollapseDuration + 0.08
+            ) { [weak self] in
+                self?.finishFloatingContentCollapse(
+                    contentSize: contentSize,
+                    targetFrame: targetFrame,
+                    completion: completion
+                )
+            }
         } else {
             applyFloatingContentSizeConstraints(contentSize)
             setFrame(targetFrame, for: floatingPanel)
             floatingPanel.contentView?.layoutSubtreeIfNeeded()
             completion?()
         }
+    }
+
+    private func finishFloatingContentCollapse(
+        contentSize: NSSize,
+        targetFrame: NSRect,
+        completion: (() -> Void)?
+    ) {
+        let contentStillExpanded = floatingButtonWidthConstraint.constant != contentSize.width
+            || floatingButtonHeightConstraint.constant != contentSize.height
+        let frameStillExpanded = floatingPanel.frame != targetFrame
+        guard contentStillExpanded || frameStillExpanded else { return }
+        applyFloatingContentSizeConstraints(contentSize)
+        setFrame(targetFrame, for: floatingPanel)
+        floatingPanel.contentView?.layoutSubtreeIfNeeded()
+        floatingDragHandleView.finishCompletionTransition()
+        completion?()
     }
 
     private func applyFloatingContentSizeConstraints(_ contentSize: NSSize) {
@@ -2903,17 +2973,34 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     private func applyAppearanceColors() {
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let showsCompletion = completionPresentation != nil
-        layer?.borderColor = (isDark ? NSColor.white : NSColor.black)
-            .withAlphaComponent(isDark ? (showsCompletion ? 0.24 : 0.32) : (showsCompletion ? 0.10 : 0.16)).cgColor
-        layer?.backgroundColor = (isDark ? NSColor.black : NSColor.white)
-            .withAlphaComponent(DesktopLiquidGlassTokens.capsuleAlpha(
-                isDark: isDark,
-                showsCompletion: showsCompletion
-            )).cgColor
+        let showsRunningState = currentPresentation?.isRunning == true
+            && !showsCompletion
+            && recordingGuardianState == nil
+        if showsRunningState {
+            layer?.borderWidth = 1.25
+            layer?.borderColor = NSColor.systemBlue
+                .withAlphaComponent(isDark ? 0.72 : 0.60).cgColor
+            layer?.backgroundColor = NSColor.systemBlue
+                .withAlphaComponent(isDark ? 0.22 : 0.14).cgColor
+        } else {
+            layer?.borderWidth = 0.75
+            layer?.borderColor = (isDark ? NSColor.white : NSColor.black)
+                .withAlphaComponent(isDark ? (showsCompletion ? 0.24 : 0.32) : (showsCompletion ? 0.10 : 0.16)).cgColor
+            layer?.backgroundColor = (isDark ? NSColor.black : NSColor.white)
+                .withAlphaComponent(DesktopLiquidGlassTokens.capsuleAlpha(
+                    isDark: isDark,
+                    showsCompletion: showsCompletion
+                )).cgColor
+        }
         glassHighlightLayer.colors = showsCompletion
             ? [
                 NSColor.white.withAlphaComponent(isDark ? 0.16 : 0.30).cgColor,
                 NSColor.white.withAlphaComponent(isDark ? 0.04 : 0.10).cgColor,
+                NSColor.clear.cgColor,
+            ]
+            : showsRunningState ? [
+                NSColor.white.withAlphaComponent(isDark ? 0.20 : 0.42).cgColor,
+                NSColor.systemBlue.withAlphaComponent(isDark ? 0.18 : 0.24).cgColor,
                 NSColor.clear.cgColor,
             ]
             : [
@@ -3032,7 +3119,6 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     }
 
     func clearCompletion() {
-        guard completionPresentation != nil else { return }
         completionShellAnimationGeneration &+= 1
         completionContentAnimationGeneration &+= 1
         completionShellMaskLayer.removeAllAnimations()
@@ -3040,6 +3126,26 @@ final class FloatingStatusButtonView: NSVisualEffectView {
         borderGradientLayer.removeAnimation(forKey: "completionMarqueeOrbit")
         borderContainerLayer.opacity = 0
         layer?.mask = nil
+        let contentLayers = [statusHalo.layer, statusLabel.layer, detailLabel.layer].compactMap { $0 }
+        contentLayers.forEach {
+            $0.removeAnimation(forKey: "completionContentReveal")
+            $0.removeAnimation(forKey: "completionContentExit")
+            $0.removeAnimation(forKey: "completionOutgoingContentExit")
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        contentLayers.forEach { $0.opacity = 1 }
+        CATransaction.commit()
+        // Repair stale transition artifacts even when another path already
+        // cleared the logical presentation. Otherwise the compact window can
+        // survive with its mask or forwards-filled content opacity still at 0.
+        guard completionPresentation != nil else {
+            statusLabel.wantsLayer = false
+            detailLabel.wantsLayer = false
+            applyAppearanceColors()
+            needsLayout = true
+            return
+        }
         completionPresentation = nil
         statusLabel.font = .systemFont(ofSize: 13, weight: .semibold)
         detailLabel.font = .systemFont(ofSize: 11, weight: .regular)
@@ -3049,13 +3155,6 @@ final class FloatingStatusButtonView: NSVisualEffectView {
         normalStatusHaloCenterConstraint?.isActive = true
         detailLabel.isHidden = true
         detailLabel.stringValue = ""
-        [statusHalo.layer, statusLabel.layer, detailLabel.layer]
-            .compactMap { $0 }
-            .forEach {
-                $0.removeAnimation(forKey: "completionContentReveal")
-                $0.removeAnimation(forKey: "completionContentExit")
-                $0.removeAnimation(forKey: "completionOutgoingContentExit")
-            }
         statusLabel.wantsLayer = false
         detailLabel.wantsLayer = false
         applyAppearanceColors()
@@ -3200,6 +3299,7 @@ final class FloatingStatusButtonView: NSVisualEffectView {
             statusLabel.layer?.add(fade, forKey: "statusTextFade")
         }
         currentTintColor = presentation.tintColor
+        applyAppearanceColors()
         statusLabel.stringValue = presentation.displayText
         detailLabel.stringValue = presentation.detailText ?? ""
         statusDot.layer?.backgroundColor = presentation.tintColor.cgColor
@@ -3208,6 +3308,7 @@ final class FloatingStatusButtonView: NSVisualEffectView {
         statusDot.layer?.shadowRadius = 4
         statusDot.layer?.shadowOffset = .zero
         updatePulse(enabled: presentation.pulses)
+        updateRunningChrome(enabled: presentation.isRunning)
         updateAmbientMotion(enabled: presentation.pulses, tintColor: presentation.tintColor)
         if shouldAnimate && !isCarouselAdvance {
             animateStatusTransition(tintColor: presentation.tintColor)
@@ -3247,6 +3348,22 @@ final class FloatingStatusButtonView: NSVisualEffectView {
         ripple.repeatCount = .infinity
         ripple.timingFunction = CAMediaTimingFunction(name: .easeOut)
         rippleLayer.add(ripple, forKey: "runningRipple")
+    }
+
+    private func updateRunningChrome(enabled: Bool) {
+        layer?.removeAnimation(forKey: "runningBorderPulse")
+        guard enabled,
+              completionPresentation == nil,
+              recordingGuardianState == nil,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        let pulse = CABasicAnimation(keyPath: "borderColor")
+        pulse.fromValue = NSColor.systemBlue.withAlphaComponent(0.42).cgColor
+        pulse.toValue = NSColor.systemBlue.withAlphaComponent(0.78).cgColor
+        pulse.duration = 1.45
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer?.add(pulse, forKey: "runningBorderPulse")
     }
 
     private func updateAmbientMotion(enabled: Bool, tintColor: NSColor) {
@@ -3417,19 +3534,51 @@ final class FloatingStatusButtonView: NSVisualEffectView {
         CATransaction.begin()
         CATransaction.setCompletionBlock { [weak self] in
             MainActor.assumeIsolated {
-                guard let self,
-                      self.completionShellAnimationGeneration == generation,
-                      self.completionPresentation != nil else { return }
-                self.completionShellMaskLayer.removeAllAnimations()
-                self.borderContainerLayer.removeAllAnimations()
-                self.borderGradientLayer.removeAnimation(forKey: "completionMarqueeOrbit")
-                self.borderContainerLayer.opacity = 0
-                self.layer?.mask = nil
-                completion()
+                self?.finishCompletionShellCollapse(
+                    generation: generation,
+                    completion: completion
+                )
             }
         }
         completionShellMaskLayer.add(morph, forKey: "completionShellCollapse")
         CATransaction.commit()
+        // Core Animation can drop the transaction completion when the app,
+        // screen, or layer tree changes during the collapse. The content exit
+        // uses a forwards fill, so missing that callback otherwise leaves a
+        // permanent empty expanded shell. Finish from the model timeline too;
+        // the generation check keeps this idempotent.
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + DesktopLiquidMotion.completionMorphCollapseDuration + 0.05
+        ) { [weak self] in
+            self?.finishCompletionShellCollapse(
+                generation: generation,
+                completion: completion
+            )
+        }
+    }
+
+    private func finishCompletionShellCollapse(
+        generation: UInt,
+        completion: @escaping () -> Void
+    ) {
+        guard completionShellAnimationGeneration == generation,
+              completionPresentation != nil else { return }
+        completionShellAnimationGeneration &+= 1
+        completionShellMaskLayer.removeAllAnimations()
+        borderContainerLayer.removeAllAnimations()
+        borderGradientLayer.removeAnimation(forKey: "completionMarqueeOrbit")
+        borderContainerLayer.opacity = 0
+        layer?.mask = nil
+        completion()
+    }
+
+    func interruptCompletionShellCollapseForTesting() {
+        completionShellMaskLayer.removeAnimation(forKey: "completionShellCollapse")
+    }
+
+    func compactVisualIsRestoredForTesting() -> Bool {
+        layer?.mask == nil
+            && [statusHalo.layer, statusLabel.layer].compactMap { $0 }.allSatisfy { $0.opacity == 1 }
     }
 
     private func startCompletionMarquee() {
@@ -3810,7 +3959,11 @@ final class FloatingDragHandleView: NSView {
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let base = isDark ? NSColor.white : NSColor.black
         layer?.backgroundColor = base.withAlphaComponent(
-            pressed ? 0.55 : (isHovering ? 0.42 : 0.24)
+            DesktopLiquidGlassTokens.dragHandleAlpha(
+                isDark: isDark,
+                isHovering: isHovering,
+                isPressed: pressed
+            )
         ).cgColor
         let targetScale: CGFloat = pressed ? 0.92 : (isHovering ? 1.08 : 1)
         CATransaction.begin()

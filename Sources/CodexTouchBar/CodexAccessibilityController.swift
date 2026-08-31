@@ -123,6 +123,27 @@ final class CodexAccessibilityController {
         return SidebarSelectionResolver.projectName(from: rows)
     }
 
+    func selectedSidebarThreadTitle() -> String? {
+        guard AXIsProcessTrusted(),
+              let application = NSRunningApplication.runningApplications(
+                  withBundleIdentifier: Self.codexBundleIdentifier
+              ).first else {
+            return nil
+        }
+        let root = AXUIElementCreateApplication(application.processIdentifier)
+        _ = enableEnhancedAccessibility(for: root)
+        return accessibilityElements(in: root, sidebarOnly: true)
+            .first { snapshot in
+                guard snapshot.role == (kAXButtonRole as String),
+                      let frame = rectAttribute("AXFrame", of: snapshot.element),
+                      frame.minX >= 20 else { return false }
+                return stringListAttribute("AXDOMClassList", of: snapshot.element)
+                    .contains("bg-token-list-hover-background")
+            }?
+            .rawText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     func apply(effort choice: EffortChoice) async throws {
         do {
             try await select(
