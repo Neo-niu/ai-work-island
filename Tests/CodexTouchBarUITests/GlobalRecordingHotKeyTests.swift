@@ -41,6 +41,16 @@ func recordingGuardianSkipsMinimizedWindows() {
     #expect(!GlobalRecordingHotKey.matches(
         keyCode: UInt16(kVK_ANSI_T), modifierFlags: [.capsLock], isRepeat: false
     ))
+    #expect(GlobalRecordingHotKey.matches(
+        keyCode: CGKeyCode(kVK_ANSI_R),
+        flags: [.maskCommand, .maskAlternate, .maskControl, .maskShift],
+        isRepeat: false
+    ))
+    #expect(!GlobalRecordingHotKey.matches(
+        keyCode: CGKeyCode(kVK_ANSI_R),
+        flags: [.maskCommand],
+        isRepeat: false
+    ))
 }
 
 @MainActor @Test func capsLockRCanBeRegisteredAsAGlobalHotKey() throws {

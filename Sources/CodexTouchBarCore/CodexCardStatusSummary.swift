@@ -42,10 +42,27 @@ public struct CodexCardStatusSummary: Equatable, Sendable {
     }
 
     public static func waiting(lastAssistantResult: String?) -> CodexCardStatusSummary {
-        let result = lastAssistantResult?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = lastAssistantResult
+            .map(visibleAssistantResult)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         return CodexCardStatusSummary(
             entries: [(result?.isEmpty == false ? result : nil) ?? "任务已完成，等待查看"]
         )
+    }
+
+    private static func visibleAssistantResult(_ value: String) -> String {
+        let pattern = #"\A\s*<heartbeat\b[^>]*>.*?<message\b[^>]*>(.*?)</message\s*>.*?</heartbeat\s*>\s*\z"#
+        guard let expression = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]
+        ) else { return value }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        guard let match = expression.firstMatch(in: value, range: range),
+              match.numberOfRanges > 1,
+              let messageRange = Range(match.range(at: 1), in: value) else {
+            return value
+        }
+        return String(value[messageRange])
     }
 
     private static func normalizedActivity(_ value: String?) -> String? {

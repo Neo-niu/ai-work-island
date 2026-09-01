@@ -40,6 +40,7 @@ let package = Package(
                 .linkedFramework("ApplicationServices"),
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("Carbon"),
+                .linkedFramework("EventKit"),
                 .linkedFramework("ServiceManagement"),
                 .linkedFramework("ScriptingBridge"),
                 .linkedFramework("UserNotifications"),

@@ -9,6 +9,10 @@ enum CodexThreadOpeningPolicy {
     ) -> Bool {
         retainedWorkIslandThreadIDs.contains(threadID)
     }
+
+    static func shouldHideOptimistically(isOwnershipTransfer: Bool) -> Bool {
+        !isOwnershipTransfer
+    }
 }
 
 enum WorkItemPrimaryAction: Equatable {
@@ -42,9 +46,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let recordingReminderCategory = "voice-memo-silence-reminder"
     private static let finishRecordingAction = "finish-and-keep-voice-memo"
     private static let continueRecordingAction = "continue-voice-memo"
+    private static let meetingTodoCategory = "meeting-todo-confirmation"
+    private static let keepMeetingTodoAction = "keep-meeting-todo"
+    private static let deleteMeetingTodoAction = "delete-meeting-todo"
 
     private let scanner = RolloutScanner()
     private let automationStatusScanner = AutomationStatusScanner()
+    private let meetingTodoQueue = MeetingTodoConfirmationQueue()
+    private let meetingReminderWriter = MeetingReminderWriter()
     private let companyQuotaScanner = CompanyQuotaScanner()
     private let grouper = ProjectGrouper()
     private let touchBarController = TouchBarController()
@@ -91,6 +100,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var voiceMemoGuardianState: VoiceMemoGuardianState?
     private var didRequestRecordingNotificationAuthorization = false
     private var recordingNotificationsAuthorized = false
+    private var isFinishingVoiceMemoRecording = false
+    private var notifiedMeetingTodoIDs: Set<String> = []
+    private var meetingTodoAlertVisible = false
     private var voiceMemoRenameInFlight = false
     private var lastVoiceMemoRenameAttempt = Date.distantPast
 
@@ -215,16 +227,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         desktopPanelController.onItemAcknowledged = { [weak self] item in
             guard let self,
                   item.id.hasPrefix("codex:") else { return }
-            self.markThreadsViewed([String(item.id.dropFirst("codex:".count))])
-            self.showTransientStatus("已标记为已阅")
+            self.acknowledgeCodexThreads([
+                String(item.id.dropFirst("codex:".count)),
+            ])
         }
         desktopPanelController.onAllWaitingAcknowledged = { [weak self] in
             guard let self else { return }
             let threadIDs = (self.latestGroups ?? []).flatMap(\.threads)
                 .filter(\.isUnread)
                 .map(\.id)
-            self.markThreadsViewed(threadIDs)
-            self.showTransientStatus(threadIDs.isEmpty ? "当前没有待读会话" : "已清空待读会话")
+            guard !threadIDs.isEmpty else {
+                self.showTransientStatus("当前没有待读会话")
+                return
+            }
+            self.acknowledgeCodexThreads(threadIDs)
         }
         desktopPanelController.onCodexTransferSelected = { [weak self] item in
             self?.transferWorkItemToCodex(item)
@@ -260,10 +276,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         updateRefreshSchedule()
         requestRefresh()
+        requestRecordingNotificationAuthorizationIfNeeded()
+        processMeetingTodoConfirmations()
         startCompanyQuotaRefreshSchedule()
         requestCompanyQuotaRefresh()
         updatePresentation()
-        if ProcessInfo.processInfo.arguments.contains("--ui-review-panel") {
+        let completionUIReviewMode = DesktopCompletionUIReviewMode(
+            arguments: ProcessInfo.processInfo.arguments
+        )
+        if completionUIReviewMode != .disabled {
+            desktopPanelController.startCompletionUIReview(completionUIReviewMode)
+        } else if ProcessInfo.processInfo.arguments.contains("--ui-review-panel") {
             desktopPanelController.show()
         } else if isDesktopPanelVisible {
             desktopPanelController.showCollapsed()
@@ -685,14 +708,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openThread(
         _ thread: ActiveThread,
-        successMessage: String
+        successMessage: String,
+        isOwnershipTransfer: Bool = false
     ) {
         if let title = thread.title,
            !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let codex = NSRunningApplication.runningApplications(
             withBundleIdentifier: Self.codexBundleIdentifier
            ).first {
-            beginOptimisticThreadView(thread.id)
+            if CodexThreadOpeningPolicy.shouldHideOptimistically(
+                isOwnershipTransfer: isOwnershipTransfer
+            ) {
+                beginOptimisticThreadView(thread.id)
+            }
             codex.activate(options: [.activateIgnoringOtherApps])
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -705,7 +733,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                     self.finishOpeningThread(thread.id, successMessage: successMessage)
                 } catch {
-                    self.cancelOptimisticThreadView(thread.id)
+                    if CodexThreadOpeningPolicy.shouldHideOptimistically(
+                        isOwnershipTransfer: isOwnershipTransfer
+                    ) {
+                        self.cancelOptimisticThreadView(thread.id)
+                    }
+                    self.desktopPanelController.updateCodexCardStatus(
+                        itemID: "codex:\(thread.id)",
+                        text: "Codex 尚未接管该任务，请稍后重试"
+                    )
                     self.showTransientStatus(
                         "会话已保留，Codex 仍在同步；请稍后从工作岛重试",
                         duration: 8
@@ -713,6 +749,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
             return
+        }
+        if isOwnershipTransfer {
+            desktopPanelController.updateCodexCardStatus(
+                itemID: "codex:\(thread.id)",
+                text: "Codex 未打开，任务仍保留在工作岛"
+            )
         }
         showTransientStatus("请先打开 Codex，再从工作岛进入该会话", duration: 8)
     }
@@ -724,14 +766,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func markThreadViewed(_ threadID: String) {
-        let file = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(
-                "Library/Application Support/Codex Hermes Touch Bar/viewed-thread-ids.json"
-            )
-        let viewedAt = Date()
-        guard (try? ViewedThreadStore.markViewed(threadID: threadID, at: viewedAt, file: file)) != nil else { return }
-        optimisticallyViewedAtByThreadID[threadID] = viewedAt
-        applyOptimisticallyViewedThreads()
+        _ = markThreadsViewed([threadID])
+    }
+
+    private func acknowledgeCodexThreads(_ threadIDs: [String]) {
+        guard !threadIDs.isEmpty else { return }
+        guard markThreadsViewed(threadIDs) else {
+            showTransientStatus("工作岛未能保存已读状态，请重试")
+            return
+        }
+        showTransientStatus(threadIDs.count == 1 ? "已在工作岛完成并设为已读" : "已全部完成并设为已读")
     }
 
     private func beginOptimisticThreadView(_ threadID: String) {
@@ -744,16 +788,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestRefresh()
     }
 
-    private func markThreadsViewed(_ threadIDs: [String]) {
+    @discardableResult
+    private func markThreadsViewed(_ threadIDs: [String]) -> Bool {
+        guard !threadIDs.isEmpty else { return true }
         let file = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(
                 "Library/Application Support/Codex Hermes Touch Bar/viewed-thread-ids.json"
             )
         let viewedAt = Date()
-        guard (try? ViewedThreadStore.markViewed(threadIDs: threadIDs, at: viewedAt, file: file)) != nil else { return }
+        guard (try? ViewedThreadStore.markViewed(threadIDs: threadIDs, at: viewedAt, file: file)) != nil else {
+            return false
+        }
         for threadID in threadIDs { optimisticallyViewedAtByThreadID[threadID] = viewedAt }
         applyOptimisticallyViewedThreads()
         requestRefresh()
+        return true
     }
 
     private func applyOptimisticallyViewedThreads() {
@@ -870,7 +919,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ) {
                     DurableCodexAppServer.stop()
                 }
-                openThread(thread, successMessage: "已转到 Codex")
+                desktopPanelController.updateCodexCardStatus(
+                    itemID: "codex:\(thread.id)",
+                    text: "工作岛已释放，正在转到 Codex…",
+                    isBusy: true
+                )
+                openThread(
+                    thread,
+                    successMessage: "已转到 Codex",
+                    isOwnershipTransfer: true
+                )
             case let .failed(message):
                 desktopPanelController.updateCodexCardStatus(
                     itemID: "codex:\(thread.id)",
@@ -1173,14 +1231,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func finishVoiceMemoRecording() {
+        guard !isFinishingVoiceMemoRecording else { return }
+        isFinishingVoiceMemoRecording = true
         desktopPanelController.updateRecordingStopInProgress(true)
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await voiceMemoLauncher.finishAndKeep()
+                isFinishingVoiceMemoRecording = false
                 voiceMemoGuardian.recordingDidFinish()
                 showTransientStatus("录音已结束并保留；将自动进入会议纪要流程")
             } catch {
+                isFinishingVoiceMemoRecording = false
                 desktopPanelController.updateRecordingStopInProgress(false)
                 if case VoiceMemoLauncher.LauncherError.accessibilityRequired = error {
                     _ = accessibilityController.requestAccessibilityAccess()
@@ -1212,12 +1274,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             title: "继续录音",
             options: []
         )
-        center.setNotificationCategories([UNNotificationCategory(
+        let recordingCategory = UNNotificationCategory(
             identifier: Self.recordingReminderCategory,
             actions: [finish, keepGoing],
             intentIdentifiers: [],
             options: []
-        )])
+        )
+        let keepTodo = UNNotificationAction(
+            identifier: Self.keepMeetingTodoAction,
+            title: "保留到提醒事项",
+            options: [.foreground]
+        )
+        let deleteTodo = UNNotificationAction(
+            identifier: Self.deleteMeetingTodoAction,
+            title: "删除",
+            options: [.destructive]
+        )
+        let todoCategory = UNNotificationCategory(
+            identifier: Self.meetingTodoCategory,
+            actions: [keepTodo, deleteTodo],
+            intentIdentifiers: [],
+            options: []
+        )
+        center.setNotificationCategories([recordingCategory, todoCategory])
     }
 
     private func requestRecordingNotificationAuthorizationIfNeeded() {
@@ -1225,8 +1304,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         didRequestRecordingNotificationAuthorization = true
         RecordingNotificationAuthorization.request { [weak self] granted in
             Task { @MainActor in
-                self?.recordingNotificationsAuthorized = granted
+                guard let self else { return }
+                self.recordingNotificationsAuthorized = granted
+                self.processMeetingTodoConfirmations()
             }
+        }
+    }
+
+    private func processMeetingTodoConfirmations() {
+        guard !isSilentMode else { return }
+        let candidates = meetingTodoQueue.pendingCandidates()
+
+        if recordingNotificationsAuthorized {
+            for candidate in candidates where !notifiedMeetingTodoIDs.contains(candidate.id) {
+                notifiedMeetingTodoIDs.insert(candidate.id)
+                showMeetingTodoNotification(candidate)
+            }
+            return
+        }
+
+        // `runModal()` keeps the main run loop alive, so the refresh timer can
+        // re-enter this method while an alert is on screen. Do not mark any
+        // later candidate as notified until it is the one actually presented.
+        guard let candidate = MeetingTodoConfirmationQueue.nextAlertCandidate(
+            from: candidates,
+            notifiedIDs: notifiedMeetingTodoIDs,
+            alertIsVisible: meetingTodoAlertVisible
+        ) else { return }
+        notifiedMeetingTodoIDs.insert(candidate.id)
+        showMeetingTodoAlert(candidate)
+    }
+
+    private func showMeetingTodoNotification(_ candidate: MeetingTodoCandidate) {
+        let content = UNMutableNotificationContent()
+        content.title = "会议待办确认"
+        let metadata = [candidate.owner, candidate.dueDate]
+            .filter { !$0.isEmpty && $0 != "待确认" }
+            .joined(separator: " · ")
+        content.body = metadata.isEmpty ? candidate.title : "\(candidate.title)\n\(metadata)"
+        content.sound = .default
+        content.categoryIdentifier = Self.meetingTodoCategory
+        content.userInfo = ["meetingTodoID": candidate.id]
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "meeting-todo-\(candidate.id)",
+            content: content,
+            trigger: nil
+        ))
+    }
+
+    private func showMeetingTodoAlert(_ candidate: MeetingTodoCandidate) {
+        meetingTodoAlertVisible = true
+        let alert = NSAlert()
+        alert.messageText = "这是你要保留的待办吗？"
+        alert.informativeText = "\(candidate.title)\n\n来源：\(candidate.meetingTitle)"
+        alert.addButton(withTitle: "保留到提醒事项")
+        alert.addButton(withTitle: "删除")
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        let keep = alert.runModal() == .alertFirstButtonReturn
+        meetingTodoAlertVisible = false
+        resolveMeetingTodo(candidate, keep: keep)
+    }
+
+    private func resolveMeetingTodo(_ candidate: MeetingTodoCandidate, keep: Bool) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                if keep {
+                    try await meetingReminderWriter.save(candidate)
+                }
+                try meetingTodoQueue.discard(candidate)
+                showTransientStatus(keep ? "已保留到提醒事项" : "已删除会议待办")
+            } catch {
+                notifiedMeetingTodoIDs.remove(candidate.id)
+                showTransientStatus("处理会议待办失败：\(error.localizedDescription)", duration: 15)
+            }
+            processMeetingTodoConfirmations()
         }
     }
 
@@ -1273,6 +1425,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func refreshTimerFired() {
         requestRefresh()
+        processMeetingTodoConfirmations()
         // Keep quota refresh tied to the app's proven-active polling loop as
         // well as its dedicated timer. CompanyQuotaScanner enforces the
         // five-minute network interval, so this is cheap between due scans
@@ -1411,6 +1564,7 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let action = response.actionIdentifier
+        let meetingTodoID = response.notification.request.content.userInfo["meetingTodoID"] as? String
         completionHandler()
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1420,6 +1574,15 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
             case Self.continueRecordingAction:
                 voiceMemoGuardian.continueRecording()
                 showTransientStatus("继续录音；15 分钟内不重复提醒")
+            case Self.keepMeetingTodoAction, Self.deleteMeetingTodoAction,
+                 UNNotificationDefaultActionIdentifier:
+                guard let id = meetingTodoID,
+                      let candidate = meetingTodoQueue.candidate(id: id) else { break }
+                if action == UNNotificationDefaultActionIdentifier {
+                    showMeetingTodoAlert(candidate)
+                } else {
+                    resolveMeetingTodo(candidate, keep: action == Self.keepMeetingTodoAction)
+                }
             default:
                 break
             }

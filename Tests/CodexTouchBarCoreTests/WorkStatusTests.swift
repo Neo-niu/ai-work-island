@@ -82,6 +82,28 @@ import Testing
     #expect(summary.entries == ["本地验证通过"])
 }
 
+@Test func waitingCodexCardShowsOnlyHeartbeatMessageBody() {
+    let result = """
+    <heartbeat>
+      <automation_id>automation-7</automation_id>
+      <decision>NOTIFY</decision>
+      <message>首日报告已发送：支付 855 单。</message>
+    </heartbeat>
+    """
+
+    let summary = CodexCardStatusSummary.waiting(lastAssistantResult: result)
+
+    #expect(summary.entries == ["首日报告已发送：支付 855 单。"])
+}
+
+@Test func waitingCodexCardDoesNotStripOrdinaryAngleBracketText() {
+    let result = "请检查 <message>示例</message> 字段"
+
+    let summary = CodexCardStatusSummary.waiting(lastAssistantResult: result)
+
+    #expect(summary.entries == [result])
+}
+
 @Test func onlyFailedAndStaleWorkItemsRequireAttention() {
     #expect(WorkItemStatus.failed.requiresAttention)
     #expect(WorkItemStatus.stale.requiresAttention)

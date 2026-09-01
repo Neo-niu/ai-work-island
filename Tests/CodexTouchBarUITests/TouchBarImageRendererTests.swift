@@ -3,6 +3,42 @@ import AppKit
 import CodexTouchBarCore
 import Testing
 
+@Test func completionUIReviewModeRequiresAnExplicitLaunchArgument() {
+    #expect(DesktopCompletionUIReviewMode(arguments: ["AI工作岛"]) == .disabled)
+    #expect(DesktopCompletionUIReviewMode(
+        arguments: ["AI工作岛", "--ui-review-completion"]
+    ) == .looping)
+    #expect(DesktopCompletionUIReviewMode(
+        arguments: ["AI工作岛", "--ui-review-completion-hold"]
+    ) == .held)
+    #expect(DesktopCompletionUIReviewMode(
+        arguments: ["AI工作岛", "--ui-review-completion", "--ui-review-completion-hold"]
+    ) == .held)
+}
+
+@MainActor
+@Test func heldCompletionUIReviewUsesTheExpandedCapsuleWithoutARealTask() {
+    let controller = DesktopStatusPanelController()
+
+    controller.startCompletionUIReview(.held)
+
+    let now = Date()
+    controller.update(snapshot: WorkStatusSnapshot(items: [
+        WorkItem(id: "codex:real", source: "Codex", title: "真实任务", status: .running, updatedAt: now)
+    ], automationIssues: [], refreshedAt: now))
+    controller.update(snapshot: WorkStatusSnapshot(items: [
+        WorkItem(id: "codex:real", source: "Codex", title: "真实任务", status: .completed, updatedAt: now)
+    ], automationIssues: [], refreshedAt: now))
+    controller.activateFloatingButtonForTesting()
+
+    #expect(controller.floatingPanelIsVisibleForTesting)
+    #expect(!controller.panelIsVisibleForTesting)
+    #expect(controller.floatingPanelSizeForTesting == DesktopFloatingButtonLayout.completionCanvasSize)
+    #expect(controller.floatingButtonMotionForTesting.shellMask.contains("completionShellMorph"))
+    #expect(!controller.completionCollapseIsScheduledForTesting)
+    controller.orderWindowsOutForTesting()
+}
+
 @MainActor
 @Test func imageRendererCombinesAnIconAndTitleIntoOneDrawableImage() {
     let image = TouchBarImageRenderer.image(
@@ -175,6 +211,69 @@ import Testing
     ))
 
     #expect(controller.activityRowsFillLeadingEdgeForTesting)
+    controller.hide()
+}
+
+@MainActor
+@Test func longURLsAndCompletedTextStayInsideTheConversationCard() {
+    let controller = DesktopStatusPanelController()
+    let itemID = "codex:right-edge"
+    controller.setCodexResultForTesting(
+        "需要注意：仅从当前看板 SQL 可以确认目标来自 Barley 维表；"
+            + String(repeating: "https://barley.rush.zhenguanyu.com/dashboard", count: 5),
+        itemID: itemID
+    )
+    controller.update(snapshot: WorkStatusSnapshot(
+        items: [WorkItem(
+            id: itemID,
+            source: "Codex",
+            title: "帮我看下这个barley看板的数据源，目标来自哪，实际课次来自哪 "
+                + String(repeating: "https://barley.rush.zhenguanyu.com/dashboard", count: 3),
+            status: .waiting,
+            updatedAt: Date()
+        )],
+        automationIssues: []
+    ))
+
+    #expect(controller.conversationRowsStayInsideCardForTesting)
+    controller.hide()
+}
+
+@MainActor
+@Test func waitingTitleUsesRemainingSpaceWithoutStretchingPrimaryAction() {
+    let controller = DesktopStatusPanelController()
+    controller.update(snapshot: WorkStatusSnapshot(
+        items: [WorkItem(
+            id: "codex:available-title-width",
+            source: "Codex",
+            title: "修复工作岛展开面板标题",
+            status: .waiting,
+            updatedAt: Date()
+        )],
+        automationIssues: []
+    ))
+
+    #expect(controller.conversationTitlesUseAvailableHeaderWidthForTesting)
+    controller.hide()
+}
+
+@MainActor
+@Test func runningTitleAndHoverActionsUseTheFullHeaderWidth() {
+    let controller = DesktopStatusPanelController()
+    controller.update(snapshot: WorkStatusSnapshot(
+        items: [WorkItem(
+            id: "codex:hover-title-width",
+            source: "Codex",
+            title: "今天的数据合并播报没完成",
+            detail: "自动下载数据并合并",
+            status: .running,
+            updatedAt: Date(),
+            activities: ["已连接 Codex，正在等待首条进度"]
+        )],
+        automationIssues: []
+    ))
+
+    #expect(controller.conversationHoveredHeadersUseFullWidthForTesting)
     controller.hide()
 }
 
@@ -459,6 +558,43 @@ import Testing
     controller.orderWindowsOutForTesting()
 }
 
+@MainActor
+@Test func conversationDraftSurvivesCardRebuildForTheSameTaskOnly() {
+    let controller = DesktopStatusPanelController()
+    let first = WorkItem(
+        id: "codex:draft-a",
+        source: "Codex",
+        title: "任务 A",
+        status: .waiting,
+        updatedAt: Date()
+    )
+    let other = WorkItem(
+        id: "codex:draft-b",
+        source: "Codex",
+        title: "任务 B",
+        status: .waiting,
+        updatedAt: Date()
+    )
+    controller.update(snapshot: WorkStatusSnapshot(items: [first, other], automationIssues: []))
+    controller.setConversationDraftForTesting("还没有发送的内容", itemID: first.id)
+
+    let rebuiltFirst = WorkItem(
+        id: first.id,
+        source: first.source,
+        title: "任务 A 已刷新",
+        status: first.status,
+        updatedAt: Date()
+    )
+    controller.update(snapshot: WorkStatusSnapshot(
+        items: [rebuiltFirst, other],
+        automationIssues: []
+    ))
+
+    #expect(controller.conversationDraftForTesting(itemID: first.id) == "还没有发送的内容")
+    #expect(controller.conversationDraftForTesting(itemID: other.id) == "")
+    controller.orderWindowsOutForTesting()
+}
+
 @Test func conversationMeasurementWidthDoesNotCollapseBeforeInitialLayout() {
     #expect(
         DesktopConversationLayout.resolvedMeasurementWidth(
@@ -692,9 +828,16 @@ import Testing
     #expect(collapsedEnd.midY > target.midY)
 }
 
-@Test func liquidMotionKeepsExpansionAndRetractionDeliberatelyAsymmetric() {
+@Test func completionExpansionReplaysTheCollapseInReverse() {
     #expect(DesktopLiquidMotion.expandDuration > DesktopLiquidMotion.collapseDuration)
     #expect(DesktopLiquidMotion.morphDuration >= DesktopLiquidMotion.collapseDuration)
+    #expect(DesktopLiquidMotion.morphDuration == 0.24)
+    #expect(DesktopLiquidMotion.completionMorphCollapseDuration == 0.24)
+    #expect(DesktopLiquidMotion.morphDuration == DesktopLiquidMotion.completionMorphCollapseDuration)
+    #expect(DesktopLiquidMotion.estimatedFrameCount(
+        duration: DesktopLiquidMotion.morphDuration,
+        refreshRate: 60
+    ) >= 15)
     #expect(DesktopLiquidMotion.hoverDuration < DesktopLiquidMotion.collapseDuration)
     #expect(DesktopLiquidMotion.resizeDuration <= 0.3)
     #expect(DesktopLiquidMotion.estimatedFrameCount(
@@ -841,6 +984,34 @@ import Testing
     #expect(DesktopConversationLayout.completedResultMarkerTopInset == 0)
 }
 
+@MainActor
+@Test func completedResultRendersMarkdownTablesWithoutSyntaxRows() {
+    let markdown = """
+    结论：
+
+    | 推荐度 | 项目 | 状态 |
+    |---|---|---|
+    | 1 | btt-window-manager-preset | 2026 年仍维护 |
+    | 2 | btt-config | 2026 年更新 |
+    """
+
+    let rendered = DesktopResultTextRenderer.attributedString(for: markdown)
+    #expect(DesktopResultTextRenderer.containsTable(in: markdown))
+    #expect(!rendered.string.contains("|---|"))
+    #expect(!rendered.string.contains("| 推荐度 |"))
+    #expect(rendered.string.contains("btt-window-manager-preset"))
+    var hasTableBlock = false
+    rendered.enumerateAttribute(
+        .paragraphStyle,
+        in: NSRange(location: 0, length: rendered.length)
+    ) { value, _, stop in
+        guard let style = value as? NSParagraphStyle, !style.textBlocks.isEmpty else { return }
+        hasTableBlock = true
+        stop.pointee = true
+    }
+    #expect(hasTableBlock)
+}
+
 @Test func panelLayerColorsResolveAgainstTheSelectedWindowAppearance() {
     let dark = NSAppearance(named: .darkAqua)!
     let light = NSAppearance(named: .aqua)!
@@ -918,6 +1089,11 @@ import Testing
     #expect(view.isRecordingStopInProgressForTesting())
     view.stopRecordingForTesting()
     #expect(stopped)
+    view.updateRecordingGuardian(
+        VoiceMemoGuardianState(phase: .recording, startedAt: Date(), silentSince: nil)
+    )
+    #expect(!view.isRecordingStopInProgressForTesting())
+    #expect(view.isStopRecordingVisibleForTesting())
     view.updateRecordingGuardian(nil)
     #expect(!view.isStopRecordingVisibleForTesting())
 }
@@ -971,6 +1147,11 @@ import Testing
     #expect(DesktopFloatingButtonLayout.completionCanvasSize == NSSize(width: 300, height: 82))
     #expect(DesktopFloatingButtonLayout.animationInset == 6)
     #expect(DesktopFloatingButtonLayout.cornerRadius == 19)
+    #expect(
+        DesktopFloatingButtonLayout.completionCornerRadius
+            == DesktopFloatingButtonLayout.cornerRadius
+    )
+    #expect(DesktopLiquidMotion.completionMarqueeOrbitDuration == 1.8)
     #expect(DesktopFloatingButtonLayout.statusDotSize == 8)
 }
 
@@ -988,20 +1169,16 @@ import Testing
     controller.hide()
 }
 
-@Test func conversationCardReservesAnUncompressedTitleHeader() {
+@Test func conversationCardKeepsTitleHeaderToOneLine() {
     #expect(DesktopConversationLayout.compactHeaderHeight == 32)
-    #expect(DesktopConversationLayout.titleLineLimit == 2)
-    #expect(
-        DesktopConversationLayout.titleHorizontalCompressionResistancePriority
-            == .defaultHigh
-    )
+    #expect(DesktopConversationLayout.titleLineLimit == 1)
     #expect(DesktopConversationLayout.titleHeaderHeight(
         for: "短标题", width: 420
     ) == DesktopConversationLayout.compactHeaderHeight)
     #expect(DesktopConversationLayout.titleHeaderHeight(
         for: String(repeating: "这是需要完整显示的会话标题", count: 8),
         width: 260
-    ) == DesktopConversationLayout.wrappedHeaderHeight)
+    ) == DesktopConversationLayout.compactHeaderHeight)
     let item = WorkItem(
         id: "codex:running-title",
         source: "Codex",
@@ -1044,7 +1221,7 @@ import Testing
 }
 
 @MainActor
-@Test func completionCapsuleShowsTaskAndStageWithoutOpeningTheMainPanel() {
+@Test func completionCapsuleShowsTaskAndStageWithoutOpeningTheMainPanel() async throws {
     let view = FloatingStatusButtonView(
         frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.completionSize)
     )
@@ -1060,9 +1237,11 @@ import Testing
     )
 
     view.showCompletion(item: item, result: nil)
+    #expect(view.isCompletionVisibleForTesting())
+    #expect(view.motionSnapshot().statusLabel.contains("completionOutgoingContentExit"))
+    try await Task.sleep(nanoseconds: 150_000_000)
     #expect(view.displayedTextForTesting() == "修改 AI工作岛")
     #expect(view.displayedDetailForTesting() == "已完成 3/3 · 验证安装版")
-    #expect(view.isCompletionVisibleForTesting())
     view.clearCompletion()
     #expect(!view.isCompletionVisibleForTesting())
 }
@@ -1090,6 +1269,27 @@ import Testing
     #expect(!controller.panelIsVisibleForTesting)
     #expect(controller.floatingPanelIsVisibleForTesting)
     #expect(controller.floatingPanelSizeForTesting == DesktopFloatingButtonLayout.completionCanvasSize)
+    controller.hide()
+}
+
+@MainActor
+@Test func finishingAViewedTaskThatLeavesTheListStillExpandsTheSummaryCapsule() {
+    let now = Date(timeIntervalSince1970: 225)
+    let controller = DesktopStatusPanelController()
+    controller.showCollapsed()
+    controller.update(snapshot: WorkStatusSnapshot(
+        items: [WorkItem(
+            id: "codex:viewed", source: "Codex", title: "已查看任务",
+            status: .running, updatedAt: now, phase: "正在收尾"
+        )],
+        automationIssues: []
+    ))
+    controller.update(snapshot: WorkStatusSnapshot(items: [], automationIssues: []))
+
+    #expect(!controller.panelIsVisibleForTesting)
+    #expect(controller.floatingPanelIsVisibleForTesting)
+    #expect(controller.floatingPanelSizeForTesting == DesktopFloatingButtonLayout.completionCanvasSize)
+    #expect(controller.floatingButtonMotionForTesting.shellMask.contains("completionShellMorph"))
     controller.hide()
 }
 
@@ -1123,6 +1323,63 @@ import Testing
     controller.showCollapsed()
 
     #expect(controller.floatingPanelSizeForTesting == DesktopFloatingButtonLayout.canvasSize)
+    controller.hide()
+}
+
+@MainActor
+@Test func interruptedCompletionCollapseStillRestoresTheCompactCapsule() async throws {
+    let now = Date(timeIntervalSince1970: 205)
+    let controller = DesktopStatusPanelController()
+    controller.showCollapsed()
+    controller.update(snapshot: WorkStatusSnapshot(items: [WorkItem(
+        id: "codex:interrupted-collapse",
+        source: "Codex",
+        title: "缩回被系统打断",
+        status: .running,
+        updatedAt: now
+    )], automationIssues: []))
+    controller.update(snapshot: WorkStatusSnapshot(items: [WorkItem(
+        id: "codex:interrupted-collapse",
+        source: "Codex",
+        title: "缩回被系统打断",
+        status: .waiting,
+        updatedAt: now.addingTimeInterval(1)
+    )], automationIssues: []))
+
+    controller.startCompletionCollapseForTesting()
+    controller.interruptCompletionCollapseForTesting()
+    try await Task.sleep(for: .milliseconds(400))
+
+    #expect(controller.floatingPanelSizeForTesting == DesktopFloatingButtonLayout.canvasSize)
+    #expect(!controller.floatingButtonIsShowingCompletionForTesting)
+    #expect(controller.floatingButtonCompactVisualIsRestoredForTesting)
+    controller.hide()
+}
+
+@MainActor
+@Test func completionCollapseKeepsItsExpandedHostUntilTheMaskFinishes() {
+    let now = Date(timeIntervalSince1970: 250)
+    let controller = DesktopStatusPanelController()
+    controller.showCollapsed()
+    controller.update(snapshot: WorkStatusSnapshot(items: [WorkItem(
+        id: "codex:freeze-collapse-host",
+        source: "Codex",
+        title: "冻结缩回宿主",
+        status: .running,
+        updatedAt: now,
+        phase: "执行"
+    )], automationIssues: []))
+    controller.update(snapshot: WorkStatusSnapshot(items: [WorkItem(
+        id: "codex:freeze-collapse-host",
+        source: "Codex",
+        title: "冻结缩回宿主",
+        status: .waiting,
+        updatedAt: now.addingTimeInterval(1)
+    )], automationIssues: []))
+
+    #expect(controller.floatingPanelSizeForTesting == DesktopFloatingButtonLayout.completionCanvasSize)
+    controller.startCompletionCollapseForTesting()
+    #expect(controller.floatingPanelSizeForTesting == DesktopFloatingButtonLayout.completionCanvasSize)
     controller.hide()
 }
 
@@ -1255,14 +1512,28 @@ import Testing
     #expect(activePresentation.displayText == "1 运行")
     #expect(activePresentation.tintColor == .systemBlue)
     #expect(activePresentation.pulses)
+    #expect(activePresentation.isRunning)
     #expect(waitingPresentation.displayText == "1 等待你")
     #expect(waitingPresentation.tintColor == .systemOrange)
     #expect(!waitingPresentation.pulses)
+    #expect(waitingPresentation.isRunning)
     #expect(completedPresentation.displayText == "已完成")
     #expect(completedPresentation.tintColor == .systemGreen)
     #expect(idlePresentation.displayText == "空闲")
     #expect(idlePresentation.tintColor == .secondaryLabelColor)
+    #expect(!idlePresentation.isRunning)
     #expect(activePresentation.accessibilityLabel == "恢复 AI工作岛；当前1 运行")
+
+    let queuedPresentation = DesktopFloatingButtonPresentation.make(
+        items: [WorkItem(
+            id: "queued", source: "Codex", title: "排队任务",
+            status: .queued, updatedAt: Date()
+        )],
+        latestCompleted: nil
+    )
+    #expect(queuedPresentation.displayText == "1 排队")
+    #expect(!queuedPresentation.pulses)
+    #expect(!queuedPresentation.isRunning)
 }
 
 @Test func floatingStatusButtonMotionHonorsReduceMotionAndMeaningfulChanges() {
@@ -1283,8 +1554,9 @@ import Testing
     #expect(DesktopFloatingButtonMotion.entranceDuration >= 0.3)
     #expect(DesktopFloatingButtonMotion.entranceDuration <= 0.4)
     #expect(DesktopFloatingButtonMotion.transitionDuration <= 0.25)
-    #expect(DesktopFloatingButtonMotion.completionContentDelay == 0.05)
-    #expect(DesktopFloatingButtonMotion.completionContentDuration < 0.3)
+    #expect(DesktopFloatingButtonMotion.completionContentDelay == 0)
+    #expect(DesktopFloatingButtonMotion.completionContentDuration == 0.10)
+    #expect(DesktopFloatingButtonMotion.completionContentStagger == 0)
     #expect(DesktopFloatingButtonMotion.carouselInterval == 4)
 }
 
@@ -1532,9 +1804,33 @@ import Testing
         current: current
     ).isEmpty)
     #expect(DesktopCompletionReminderBehavior.completedItem(
-        from: current,
+        previous: previous,
+        current: current,
         matching: ["codex:1"]
     )?.displayTitle == "分析任务")
+
+    let disappeared = WorkStatusSnapshot(items: [], automationIssues: [], refreshedAt: now)
+    #expect(DesktopCompletionReminderBehavior.newlyCompletedItemIDs(
+        previous: previous,
+        current: disappeared
+    ) == ["codex:1"])
+    #expect(DesktopCompletionReminderBehavior.completedItem(
+        previous: previous,
+        current: disappeared,
+        matching: ["codex:1"]
+    )?.displayTitle == "分析任务")
+
+    let runningAutomation = WorkItem(
+        id: "automation:1",
+        source: "Automation",
+        title: "定时任务",
+        status: .running,
+        updatedAt: now
+    )
+    #expect(DesktopCompletionReminderBehavior.newlyCompletedItemIDs(
+        previous: WorkStatusSnapshot(items: [runningAutomation], automationIssues: []),
+        current: disappeared
+    ).isEmpty)
     let completion = DesktopFloatingButtonPresentation.completion(
         item: running,
         result: "已完成资料核对"
@@ -1649,6 +1945,7 @@ import Testing
 
     #expect(!motion.root.contains("statusBounce"))
     #expect(motion.root.contains("statusBorderFlash"))
+    #expect(motion.root.contains("runningBorderPulse"))
     #expect(motion.statusDot.contains("statusPulse"))
     #expect(motion.statusDot.contains("statusDotPop"))
     #expect(motion.ripple.contains("runningRipple"))
@@ -1656,6 +1953,9 @@ import Testing
     #expect(!motion.ambient.contains("ambientDrift"))
     #expect(!motion.border.contains("borderOrbit"))
     #expect(!motion.sheen.contains("statusSheen"))
+
+    view.update(snapshot: WorkStatusSnapshot(items: [], automationIssues: []))
+    #expect(!view.motionSnapshot().root.contains("runningBorderPulse"))
 }
 
 @MainActor
@@ -1675,9 +1975,127 @@ import Testing
     )
 
     let motion = view.motionSnapshot()
-    #expect(motion.statusLabel.contains("completionContentReveal"))
-    #expect(motion.detailLabel.contains("completionContentReveal"))
+    #expect(motion.statusLabel.contains("completionOutgoingContentExit"))
     #expect(!motion.root.contains("statusBounce"))
+}
+
+@MainActor
+@Test func completionCapsuleUsesOneAnchoredPathForExpansionAndCollapse() {
+    let view = FloatingStatusButtonView(
+        frame: NSRect(origin: .zero, size: DesktopFloatingButtonLayout.completionSize)
+    )
+    view.showCompletion(
+        item: WorkItem(
+            id: "codex:completion-shell-motion",
+            source: "Codex",
+            title: "胶囊连续形变",
+            status: .completed,
+            updatedAt: Date()
+        ),
+        result: "展开和缩回共用右侧锚定路径"
+    )
+    view.prepareCompletionShellExpansion(
+        from: DesktopFloatingButtonLayout.size,
+        to: DesktopFloatingButtonLayout.completionSize
+    )
+    let preparedGeometry = view.completionShellMaskGeometryForTesting()
+    #expect(preparedGeometry.position == CGPoint(
+        x: DesktopFloatingButtonLayout.completionSize.width,
+        y: DesktopFloatingButtonLayout.completionSize.height
+    ))
+    #expect(preparedGeometry.size == DesktopFloatingButtonLayout.size)
+    #expect(preparedGeometry.cornerRadius == DesktopFloatingButtonLayout.cornerRadius)
+
+    view.playPreparedCompletionShellExpansion()
+    let expansionMotion = view.motionSnapshot()
+    #expect(expansionMotion.shellMask.contains("completionShellMorph"))
+    view.startCompletionMarqueeForTesting()
+    #expect(view.motionSnapshot().border.contains("completionMarqueeOrbit"))
+    #expect(view.completionMarqueeRepeatsForTesting())
+    #expect(view.completionMarqueeOpacityForTesting() == 0.72)
+
+    view.playCompletionShellCollapse(to: DesktopFloatingButtonLayout.size) {}
+    let collapseMotion = view.motionSnapshot()
+    #expect(collapseMotion.shellMask.contains("completionShellCollapse"))
+    #expect(collapseMotion.statusLabel.contains("completionContentExit"))
+    #expect(collapseMotion.detailLabel.contains("completionContentExit"))
+}
+
+@Test func completionMorphEndsAtTheCompactCapsulesFinalTopRightPosition() {
+    let expandedBounds = NSRect(
+        origin: .zero,
+        size: DesktopFloatingButtonLayout.completionSize
+    )
+    let compactRect = DesktopFloatingButtonLayout.completionMorphCompactRect(
+        in: expandedBounds
+    )
+
+    #expect(compactRect.maxX == expandedBounds.maxX)
+    #expect(compactRect.maxY == expandedBounds.maxY)
+    #expect(compactRect.size == DesktopFloatingButtonLayout.size)
+    #expect(compactRect.minY != expandedBounds.midY - compactRect.height / 2)
+}
+
+@Test func completionContentLeavesOnlyAtTheEndOfTheCollapse() {
+    #expect(DesktopFloatingButtonMotion.completionContentExitDuration == 0.10)
+    #expect(
+        DesktopFloatingButtonMotion.completionContentExitDuration
+            < DesktopLiquidMotion.completionMorphCollapseDuration / 2
+    )
+}
+
+@Test func dragHandleKeepsEnoughContrastOnLightBackgrounds() {
+    let lightIdle = DesktopLiquidGlassTokens.dragHandleAlpha(
+        isDark: false,
+        isHovering: false,
+        isPressed: false
+    )
+    let lightHover = DesktopLiquidGlassTokens.dragHandleAlpha(
+        isDark: false,
+        isHovering: true,
+        isPressed: false
+    )
+    let lightPressed = DesktopLiquidGlassTokens.dragHandleAlpha(
+        isDark: false,
+        isHovering: true,
+        isPressed: true
+    )
+
+    #expect(lightIdle >= 0.45)
+    #expect(lightIdle < lightHover)
+    #expect(lightHover < lightPressed)
+    #expect(
+        DesktopLiquidGlassTokens.dragHandleAlpha(
+            isDark: true,
+            isHovering: false,
+            isPressed: false
+        ) >= 0.30
+    )
+    #expect(DesktopLiquidGlassTokens.dragHandleBorderAlpha(isDark: true) >= 0.40)
+    #expect(DesktopLiquidGlassTokens.dragHandleBorderAlpha(isDark: false) >= 0.30)
+}
+
+@MainActor
+@Test func dragHandleTravelsWithTheCompletionCapsuleCenter() {
+    let handle = FloatingDragHandleView(frame: NSRect(
+        origin: .zero,
+        size: DesktopFloatingButtonLayout.dragHandleSize
+    ))
+    let travel = (
+        DesktopFloatingButtonLayout.completionSize.width
+            - DesktopFloatingButtonLayout.size.width
+    ) / 2
+    handle.playCompletionExpansion(
+        horizontalTravel: travel,
+        duration: DesktopLiquidMotion.morphDuration
+    )
+    #expect(handle.completionMotionKeysForTesting.contains("completionHandleExpansion"))
+
+    handle.playCompletionCollapse(
+        horizontalTravel: travel,
+        duration: DesktopLiquidMotion.completionMorphCollapseDuration
+    )
+    #expect(handle.completionMotionKeysForTesting.contains("completionHandleCollapse"))
 }
 
 @Test func desktopPanelIgnoresRefreshOnlyChangesButDetectsVisibleContentChanges() {
