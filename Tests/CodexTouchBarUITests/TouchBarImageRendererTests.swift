@@ -558,6 +558,43 @@ import Testing
     controller.orderWindowsOutForTesting()
 }
 
+@MainActor
+@Test func conversationDraftSurvivesCardRebuildForTheSameTaskOnly() {
+    let controller = DesktopStatusPanelController()
+    let first = WorkItem(
+        id: "codex:draft-a",
+        source: "Codex",
+        title: "任务 A",
+        status: .waiting,
+        updatedAt: Date()
+    )
+    let other = WorkItem(
+        id: "codex:draft-b",
+        source: "Codex",
+        title: "任务 B",
+        status: .waiting,
+        updatedAt: Date()
+    )
+    controller.update(snapshot: WorkStatusSnapshot(items: [first, other], automationIssues: []))
+    controller.setConversationDraftForTesting("还没有发送的内容", itemID: first.id)
+
+    let rebuiltFirst = WorkItem(
+        id: first.id,
+        source: first.source,
+        title: "任务 A 已刷新",
+        status: first.status,
+        updatedAt: Date()
+    )
+    controller.update(snapshot: WorkStatusSnapshot(
+        items: [rebuiltFirst, other],
+        automationIssues: []
+    ))
+
+    #expect(controller.conversationDraftForTesting(itemID: first.id) == "还没有发送的内容")
+    #expect(controller.conversationDraftForTesting(itemID: other.id) == "")
+    controller.orderWindowsOutForTesting()
+}
+
 @Test func conversationMeasurementWidthDoesNotCollapseBeforeInitialLayout() {
     #expect(
         DesktopConversationLayout.resolvedMeasurementWidth(
@@ -1052,6 +1089,11 @@ import Testing
     #expect(view.isRecordingStopInProgressForTesting())
     view.stopRecordingForTesting()
     #expect(stopped)
+    view.updateRecordingGuardian(
+        VoiceMemoGuardianState(phase: .recording, startedAt: Date(), silentSince: nil)
+    )
+    #expect(!view.isRecordingStopInProgressForTesting())
+    #expect(view.isStopRecordingVisibleForTesting())
     view.updateRecordingGuardian(nil)
     #expect(!view.isStopRecordingVisibleForTesting())
 }
@@ -2029,6 +2071,8 @@ import Testing
             isPressed: false
         ) >= 0.30
     )
+    #expect(DesktopLiquidGlassTokens.dragHandleBorderAlpha(isDark: true) >= 0.40)
+    #expect(DesktopLiquidGlassTokens.dragHandleBorderAlpha(isDark: false) >= 0.30)
 }
 
 @MainActor

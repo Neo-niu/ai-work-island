@@ -100,6 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var voiceMemoGuardianState: VoiceMemoGuardianState?
     private var didRequestRecordingNotificationAuthorization = false
     private var recordingNotificationsAuthorized = false
+    private var isFinishingVoiceMemoRecording = false
     private var notifiedMeetingTodoIDs: Set<String> = []
     private var meetingTodoAlertVisible = false
     private var voiceMemoRenameInFlight = false
@@ -1230,14 +1231,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func finishVoiceMemoRecording() {
+        guard !isFinishingVoiceMemoRecording else { return }
+        isFinishingVoiceMemoRecording = true
         desktopPanelController.updateRecordingStopInProgress(true)
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await voiceMemoLauncher.finishAndKeep()
+                isFinishingVoiceMemoRecording = false
                 voiceMemoGuardian.recordingDidFinish()
                 showTransientStatus("录音已结束并保留；将自动进入会议纪要流程")
             } catch {
+                isFinishingVoiceMemoRecording = false
                 desktopPanelController.updateRecordingStopInProgress(false)
                 if case VoiceMemoLauncher.LauncherError.accessibilityRequired = error {
                     _ = accessibilityController.requestAccessibilityAccess()
@@ -1309,15 +1314,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func processMeetingTodoConfirmations() {
         guard !isSilentMode else { return }
         let candidates = meetingTodoQueue.pendingCandidates()
-        for candidate in candidates where !notifiedMeetingTodoIDs.contains(candidate.id) {
-            notifiedMeetingTodoIDs.insert(candidate.id)
-            if recordingNotificationsAuthorized {
+
+        if recordingNotificationsAuthorized {
+            for candidate in candidates where !notifiedMeetingTodoIDs.contains(candidate.id) {
+                notifiedMeetingTodoIDs.insert(candidate.id)
                 showMeetingTodoNotification(candidate)
-            } else if !meetingTodoAlertVisible {
-                showMeetingTodoAlert(candidate)
-                break
             }
+            return
         }
+
+        // `runModal()` keeps the main run loop alive, so the refresh timer can
+        // re-enter this method while an alert is on screen. Do not mark any
+        // later candidate as notified until it is the one actually presented.
+        guard let candidate = MeetingTodoConfirmationQueue.nextAlertCandidate(
+            from: candidates,
+            notifiedIDs: notifiedMeetingTodoIDs,
+            alertIsVisible: meetingTodoAlertVisible
+        ) else { return }
+        notifiedMeetingTodoIDs.insert(candidate.id)
+        showMeetingTodoAlert(candidate)
     }
 
     private func showMeetingTodoNotification(_ candidate: MeetingTodoCandidate) {

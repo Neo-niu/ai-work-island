@@ -26,8 +26,8 @@ final class GlobalRecordingHotKey {
 
     var onPressed: (() -> Void)?
 
-    private var globalMonitor: Any?
-    private var localMonitor: Any?
+    private var eventTap: CFMachPort?
+    private var eventTapSource: CFRunLoopSource?
 
     nonisolated static func matches(
         keyCode: UInt16,
@@ -52,41 +52,85 @@ final class GlobalRecordingHotKey {
             || normalizedModifiers == betterTouchToolHyper
     }
 
+    nonisolated static func matches(
+        keyCode: CGKeyCode,
+        flags: CGEventFlags,
+        isRepeat: Bool
+    ) -> Bool {
+        var modifiers: NSEvent.ModifierFlags = []
+        if flags.contains(.maskAlphaShift) { modifiers.insert(.capsLock) }
+        if flags.contains(.maskCommand) { modifiers.insert(.command) }
+        if flags.contains(.maskAlternate) { modifiers.insert(.option) }
+        if flags.contains(.maskControl) { modifiers.insert(.control) }
+        if flags.contains(.maskShift) { modifiers.insert(.shift) }
+        return matches(
+            keyCode: UInt16(keyCode),
+            modifierFlags: modifiers,
+            isRepeat: isRepeat
+        )
+    }
+
     func unregister() {
-        if let globalMonitor {
-            NSEvent.removeMonitor(globalMonitor)
-            self.globalMonitor = nil
+        if let eventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
         }
-        if let localMonitor {
-            NSEvent.removeMonitor(localMonitor)
-            self.localMonitor = nil
+        if let eventTapSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapSource, .commonModes)
         }
+        eventTapSource = nil
+        eventTap = nil
     }
 
     func register() throws {
-        guard globalMonitor == nil, localMonitor == nil else { return }
+        guard eventTap == nil else { return }
 
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard Self.matches(
-                keyCode: event.keyCode,
-                modifierFlags: event.modifierFlags,
-                isRepeat: event.isARepeat
-            ) else { return }
-            Task { @MainActor [weak self] in self?.onPressed?() }
-        }
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard Self.matches(
-                keyCode: event.keyCode,
-                modifierFlags: event.modifierFlags,
-                isRepeat: event.isARepeat
-            ) else { return event }
-            self?.onPressed?()
-            return nil
-        }
-
-        guard globalMonitor != nil, localMonitor != nil else {
-            unregister()
+        let mask = CGEventMask(1 << CGEventType.keyDown.rawValue)
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: Self.eventTapCallback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
             throw HotKeyError.monitorRegistrationFailed
         }
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            CFMachPortInvalidate(tap)
+            throw HotKeyError.monitorRegistrationFailed
+        }
+        eventTap = tap
+        eventTapSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    private nonisolated static let eventTapCallback: CGEventTapCallBack = {
+        _, type, event, userInfo in
+        guard let userInfo else { return Unmanaged.passUnretained(event) }
+        let hotKey = Unmanaged<GlobalRecordingHotKey>.fromOpaque(userInfo).takeUnretainedValue()
+
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            Task { @MainActor in
+                if let tap = hotKey.eventTap {
+                    CGEvent.tapEnable(tap: tap, enable: true)
+                }
+            }
+            return Unmanaged.passUnretained(event)
+        }
+        guard type == .keyDown,
+              matches(
+                keyCode: CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode)),
+                flags: event.flags,
+                isRepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+              ) else {
+            return Unmanaged.passUnretained(event)
+        }
+
+        Task { @MainActor in hotKey.onPressed?() }
+        // A global NSEvent monitor can only observe this key. Returning nil from
+        // an active event tap consumes it, so Edge does not also interpret the
+        // BetterTouchTool Hyper-Key variant as Command-R and refresh the page.
+        return nil
     }
 }

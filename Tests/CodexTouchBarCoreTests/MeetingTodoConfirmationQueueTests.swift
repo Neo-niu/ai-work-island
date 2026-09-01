@@ -23,6 +23,40 @@ import Testing
     #expect(queue.pendingCandidates().isEmpty)
 }
 
+@Test func meetingTodoAlertDoesNotClaimLaterCandidatesWhileOneIsVisible() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let now = Date(timeIntervalSince1970: 2_000_000_000)
+    try payload(id: "first", created: now, expires: now.addingTimeInterval(60))
+        .write(to: root.appendingPathComponent("first.json"))
+    try payload(id: "second", created: now.addingTimeInterval(1), expires: now.addingTimeInterval(60))
+        .write(to: root.appendingPathComponent("second.json"))
+    let candidates = MeetingTodoConfirmationQueue(
+        pendingDirectory: root,
+        now: { now }
+    ).pendingCandidates()
+
+    let first = MeetingTodoConfirmationQueue.nextAlertCandidate(
+        from: candidates,
+        notifiedIDs: [],
+        alertIsVisible: false
+    )
+    #expect(first?.id == "first")
+    #expect(MeetingTodoConfirmationQueue.nextAlertCandidate(
+        from: candidates,
+        notifiedIDs: ["first"],
+        alertIsVisible: true
+    ) == nil)
+    let second = MeetingTodoConfirmationQueue.nextAlertCandidate(
+        from: candidates,
+        notifiedIDs: ["first"],
+        alertIsVisible: false
+    )
+    #expect(second?.id == "second")
+}
+
 private func payload(id: String, created: Date, expires: Date) -> Data {
     let formatter = ISO8601DateFormatter()
     let object: [String: Any] = [

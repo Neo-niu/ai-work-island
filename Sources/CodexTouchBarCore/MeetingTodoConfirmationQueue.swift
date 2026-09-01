@@ -91,6 +91,15 @@ public struct MeetingTodoConfirmationQueue: Sendable {
         pendingCandidates().first { $0.id == id }
     }
 
+    public static func nextAlertCandidate(
+        from candidates: [MeetingTodoCandidate],
+        notifiedIDs: Set<String>,
+        alertIsVisible: Bool
+    ) -> MeetingTodoCandidate? {
+        guard !alertIsVisible else { return nil }
+        return candidates.first { !notifiedIDs.contains($0.id) }
+    }
+
     public func discard(_ candidate: MeetingTodoCandidate) throws {
         try FileManager.default.removeItem(at: candidate.fileURL)
     }

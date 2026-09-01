@@ -739,6 +739,9 @@ enum DesktopLiquidGlassTokens {
         if isHovering { return isDark ? 0.50 : 0.58 }
         return isDark ? 0.32 : 0.46
     }
+    static func dragHandleBorderAlpha(isDark: Bool) -> CGFloat {
+        isDark ? 0.42 : 0.30
+    }
     static func capsuleAlpha(isDark: Bool, showsCompletion: Bool) -> CGFloat {
         if isDark { return showsCompletion ? 0.54 : 0.46 }
         return showsCompletion ? 0.76 : 0.68
@@ -1290,6 +1293,7 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     private var completionUIReviewMode: DesktopCompletionUIReviewMode = .disabled
     private var codexResults: [String: String] = [:]
     private var codexRows: [String: WorkItemRowView] = [:]
+    private var conversationDrafts: [String: String] = [:]
     private var displayMode: DesktopPanelMode = .background
     private var contentMode: DesktopContentMode = .clean
     private var isSynchronizingWindowPositions = false
@@ -1577,6 +1581,14 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
     var sharedAnchorForTesting: NSPoint? { sharedTopRightAnchor }
     var userPreferredPanelCenterForTesting: NSPoint? { userPreferredPanelCenter }
 
+    func setConversationDraftForTesting(_ text: String, itemID: String) {
+        codexRows[itemID]?.setDraftForTesting(text)
+    }
+
+    func conversationDraftForTesting(itemID: String) -> String? {
+        codexRows[itemID]?.draftForTesting
+    }
+
     func setCollapsedFrameForTesting(_ frame: NSRect) {
         setFrame(frame, for: floatingPanel)
         sharedTopRightAnchor = DesktopPanelAnchorLayout.anchor(fromFloatingFrame: frame)
@@ -1789,7 +1801,8 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
                         item: item,
                         lastAssistantResult: codexResults[item.id],
                         contentMode: contentMode,
-                        measurementWidth: conversationMeasurementWidth
+                        measurementWidth: conversationMeasurementWidth,
+                        initialDraft: conversationDrafts[item.id] ?? ""
                     )
                     row.onSelected = { [weak self] in self?.onItemSelected?(item) }
                     row.onDetailsSelected = { [weak self] in self?.onItemDetailsSelected?(item) }
@@ -1807,6 +1820,13 @@ final class DesktopStatusPanelController: NSObject, NSWindowDelegate, NSTextFiel
                         }
                         row.onPromptSubmitted = { [weak self] prompt in
                             self?.onCodexPromptSubmitted?(item.id, prompt)
+                        }
+                        row.onDraftChanged = { [weak self] text in
+                            if text.isEmpty {
+                                self?.conversationDrafts.removeValue(forKey: item.id)
+                            } else {
+                                self?.conversationDrafts[item.id] = text
+                            }
                         }
                         codexRows[item.id] = row
                     }
@@ -3266,9 +3286,17 @@ final class FloatingStatusButtonView: NSVisualEffectView {
 
     func updateRecordingGuardian(_ state: VoiceMemoGuardianState?) {
         recordingGuardianState = state
-        if state == nil {
-            isRecordingStopInProgress = false
-        }
+        // The guardian is the source of truth. If it can still see an active
+        // recording, the capsule must keep offering Stop instead of retaining
+        // a stale hourglass from an earlier finish attempt.
+        isRecordingStopInProgress = false
+        stopRecordingButton.isEnabled = true
+        stopRecordingButton.image = NSImage(
+            systemSymbolName: "stop.fill",
+            accessibilityDescription: "停止录音"
+        )
+        stopRecordingButton.contentTintColor = .systemRed
+        stopRecordingButton.toolTip = "停止录音并保留"
         stopRecordingButton.isHidden = state == nil
         normalStatusLabelTrailingConstraint?.isActive = state == nil
         recordingStatusLabelTrailingConstraint?.isActive = state != nil
@@ -3875,6 +3903,10 @@ final class FloatingStatusButtonView: NSVisualEffectView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        // The capsule is normally clicked while another app is active. Make
+        // this first click a real interaction before routing mouse-up.
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        window?.makeKey()
         pendingHoverActivation?.cancel()
         pendingHoverActivation = nil
         setScale(0.96)
@@ -4057,12 +4089,20 @@ final class FloatingDragHandleView: NSView {
     private func applyAppearance(isHovering: Bool, pressed: Bool = false) {
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let base = isDark ? NSColor.white : NSColor.black
+        let border = isDark ? NSColor.black : NSColor.white
         layer?.backgroundColor = base.withAlphaComponent(
             DesktopLiquidGlassTokens.dragHandleAlpha(
                 isDark: isDark,
                 isHovering: isHovering,
                 isPressed: pressed
             )
+        ).cgColor
+        // The panel can float over content whose brightness is opposite to the
+        // app appearance. A restrained opposite-color edge keeps the handle
+        // legible in both cases without changing its size or drag behavior.
+        layer?.borderWidth = 1
+        layer?.borderColor = border.withAlphaComponent(
+            DesktopLiquidGlassTokens.dragHandleBorderAlpha(isDark: isDark)
         ).cgColor
         let targetScale: CGFloat = pressed ? 0.92 : (isHovering ? 1.08 : 1)
         CATransaction.begin()
@@ -4340,6 +4380,7 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
     var onSelected: (() -> Void)?
     var onDetailsSelected: (() -> Void)?
     var onPromptSubmitted: ((CodexPrompt) -> Void)?
+    var onDraftChanged: ((String) -> Void)?
     var onCodexTransferSelected: (() -> Void)? {
         didSet {
             codexTransferButton.isHidden = onCodexTransferSelected == nil
@@ -4383,7 +4424,8 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
         item: WorkItem,
         lastAssistantResult: String? = nil,
         contentMode: DesktopContentMode = .clean,
-        measurementWidth: CGFloat = DesktopConversationLayout.defaultMeasurementWidth
+        measurementWidth: CGFloat = DesktopConversationLayout.defaultMeasurementWidth,
+        initialDraft: String = ""
     ) {
         self.contentMode = contentMode
         cardHeight = DesktopConversationLayout.cardHeight(
@@ -4572,6 +4614,7 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
                 row.addGestureRecognizer(NSClickGestureRecognizer(target: self, action: #selector(selectRow)))
             }
             promptField.placeholderString = "直接回复…"
+            promptField.stringValue = initialDraft
             promptField.font = .systemFont(ofSize: 12)
             promptField.isBordered = false
             promptField.drawsBackground = false
@@ -4795,6 +4838,15 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
 
     override func mouseEntered(with event: NSEvent) { setHovering(true) }
     override func mouseExited(with event: NSEvent) { setHovering(false) }
+
+    override func mouseDown(with event: NSEvent) {
+        // The floating panel is normally clicked while another app is active.
+        // Activate before tracking so this same click reaches `selectRow`.
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        window?.makeKey()
+        super.mouseDown(with: event)
+    }
+
     override func mouseUp(with event: NSEvent) { selectRow() }
 
     func playSuccessSweep(color: NSColor) {
@@ -4842,6 +4894,11 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
 
     func controlTextDidEndEditing(_ obj: Notification) {
         conversationInputBackground.setFocused(false)
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField, field === promptField else { return }
+        onDraftChanged?(promptField.stringValue)
     }
 
     func control(
@@ -4928,8 +4985,16 @@ private final class WorkItemRowView: NSView, NSTextFieldDelegate {
         }
         guard !prompt.isEmpty else { return }
         promptField.stringValue = ""
+        onDraftChanged?("")
         imageCountLabel.isHidden = true
         onPromptSubmitted?(prompt)
+    }
+
+    var draftForTesting: String { promptField.stringValue }
+
+    func setDraftForTesting(_ text: String) {
+        promptField.stringValue = text
+        onDraftChanged?(text)
     }
 }
 
@@ -5036,6 +5101,15 @@ final class PastedImageTextField: NSTextField {
 @MainActor
 final class FirstMouseButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        // `acceptsFirstMouse` lets the control receive the event, but a
+        // nonactivating NSPanel can still leave the click in activation-only
+        // state. Activate before tracking so the same click fires the action.
+        NSRunningApplication.current.activate(options: [.activateIgnoringOtherApps])
+        window?.makeKey()
+        super.mouseDown(with: event)
+    }
 }
 
 @MainActor
